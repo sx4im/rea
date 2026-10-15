@@ -65,6 +65,42 @@ it("omits trailing blank cells from visible lines without losing rows", async ()
   );
 });
 
+it("pads rows by cell width so wide characters gain no phantom blank cell", async () => {
+  const renderer = new TerminalRenderer({
+    columns: 4,
+    rows: 1,
+    scrollback: 0,
+    maxBytes: 100_000,
+    normalize: boundedNormalize((value) => value.replaceAll(" ", "_")),
+  });
+  try {
+    renderer.write("界", 0);
+    const frames = await renderer.frames();
+    // The terminal row is one two-cell character plus two blank cells; the
+    // old length-based padding invented a third blank cell ("界___").
+    expect(frames[0]?.lines).toEqual(["界__"]);
+  } finally {
+    await renderer.dispose();
+  }
+});
+
+it("leaves a row already at cell width unpadded", async () => {
+  const renderer = new TerminalRenderer({
+    columns: 4,
+    rows: 1,
+    scrollback: 0,
+    maxBytes: 100_000,
+    normalize: boundedNormalize((value) => value.replaceAll(" ", "_")),
+  });
+  try {
+    renderer.write("界界", 0);
+    const frames = await renderer.frames();
+    expect(frames[0]?.lines).toEqual(["界界"]);
+  } finally {
+    await renderer.dispose();
+  }
+});
+
 it("applies rendered retention cumulatively across sparse frames", async () => {
   const renderer = new TerminalRenderer({
     columns: 10,

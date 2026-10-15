@@ -17,6 +17,55 @@ const SerializePackage =
 
 const TRAILING_SPACES = / +$/u;
 
+// [low, high] code-point ranges for terminal cell width. Combining marks ride
+// on the previous cell (width 0); East Asian wide and fullwidth ranges occupy
+// two cells; everything else is one cell.
+const ZERO_WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x300, 0x36f],
+  [0x1ab0, 0x1aff],
+  [0x1dc0, 0x1dff],
+  [0x20d0, 0x20ff],
+  [0xfe20, 0xfe2f],
+];
+
+const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe4f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x20000, 0x3fffd],
+];
+
+const inRanges = (
+  codePoint: number,
+  ranges: ReadonlyArray<readonly [number, number]>,
+): boolean =>
+  ranges.some(([low, high]) => codePoint >= low && codePoint <= high);
+
+// xterm reports rows by cell width, but JavaScript string length counts a
+// two-cell character as one. Measure by display width so the retained row
+// keeps exactly the terminal row's cells instead of inventing a blank one.
+const cellWidth = (codePoint: number): number => {
+  if (inRanges(codePoint, ZERO_WIDTH_RANGES)) return 0;
+  if (inRanges(codePoint, WIDE_RANGES)) return 2;
+  return 1;
+};
+
+const displayWidth = (value: string): number => {
+  let width = 0;
+  for (const char of value) width += cellWidth(char.codePointAt(0) ?? 0);
+  return width;
+};
+
+/** padEnd counted in terminal cells, not UTF-16 code units. */
+const padToCellWidth = (value: string, columns: number): string => {
+  const deficit = columns - displayWidth(value);
+  return deficit > 0 ? value + " ".repeat(deficit) : value;
+};
+
 interface TerminalRendererOptions {
   readonly columns: number;
   readonly rows: number;
@@ -131,9 +180,10 @@ export class TerminalRenderer {
     let bytes = 0;
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
-      const paddedLine = (
-        line?.translateToString(false, 0, this.#terminal.cols) ?? ""
-      ).padEnd(this.#terminal.cols, " ");
+      const paddedLine = padToCellWidth(
+        line?.translateToString(false, 0, this.#terminal.cols) ?? "",
+        this.#terminal.cols,
+      );
       const trailingSpaceBytes = Buffer.byteLength(
         paddedLine.match(TRAILING_SPACES)?.[0] ?? "",
       );
