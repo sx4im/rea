@@ -6,7 +6,13 @@ export const readBoundedFileBytes = async (
   maxBytes: number,
   signal?: AbortSignal,
   expectedSize?: number,
+  cancellationFailure?: (reason: unknown) => Error,
 ): Promise<Buffer | undefined> => {
+  const assertActive = (): void => {
+    if (signal?.aborted && cancellationFailure !== undefined)
+      throw cancellationFailure(signal.reason);
+    signal?.throwIfAborted();
+  };
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
     throw new RangeError("File byte limit must be a nonnegative safe integer");
   if (
@@ -21,7 +27,7 @@ export const readBoundedFileBytes = async (
     const buffer = Buffer.allocUnsafe(Math.min(64 * 1_024, maxBytes + 1));
     let total = 0;
     for (;;) {
-      signal?.throwIfAborted();
+      assertActive();
       const { bytesRead } = await handle.read(
         buffer,
         0,
@@ -38,7 +44,7 @@ export const readBoundedFileBytes = async (
   if (expectedSize === 0) return buffer;
   let total = 0;
   for (;;) {
-    signal?.throwIfAborted();
+    assertActive();
     const { bytesRead } = await handle.read(
       buffer,
       total,

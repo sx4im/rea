@@ -224,7 +224,7 @@ export const ADB_TOOL_CONTRACTS = [
     name: "inspect_adb_window",
     ...toolContractMetadata("inspect_adb_window"),
     description:
-      "Report the window manager's current focus declarations (mCurrentFocus and mFocusedApp from `dumpsys window windows`, or from `dumpsys window displays` when the windows section declares neither, as on Android 16) — what is on screen at read time without any interaction. Read-only.",
+      "Report the window manager's focus declarations with display context, original lines and explicit summary status. Reads `dumpsys window windows`, falling back to `displays` only when no focus field is declared. Singular fields are unknown for multiple contexts or repeated declarations; inspect focus_contexts for every observation. Read-only; no interaction occurs.",
     kind: "adb-provider",
     inputSchema: adbInputSchemas.inspect_adb_window,
     outputSchema: evidenceResultOf(adbResultSchemas.inspect_adb_window),
@@ -311,7 +311,7 @@ export const ADB_TOOL_CONTRACTS = [
     name: "uninstall_adb_package",
     ...toolContractMetadata("uninstall_adb_package"),
     description:
-      "Uninstall one package from the device (`adb uninstall`), removing its data for user 0. A device-mutating tool; absent packages report the device's own refusal reason.",
+      "Request package removal for user 0 (`adb shell pm uninstall --user 0`) without data retention. A device-mutating tool; absent packages report the device's own refusal reason.",
     kind: "adb-provider",
     inputSchema: adbInputSchemas.uninstall_adb_package,
     outputSchema: evidenceResultOf(adbResultSchemas.uninstall_adb_package),

@@ -236,18 +236,20 @@ const readCapture = async (
   try {
     return ok({ bytes: await readRegularFile(path, { signal }) });
   } catch (cause: unknown) {
+    if (signal?.aborted === true && cause === signal.reason)
+      return err(captureReadFailure(path, cause, signal));
     if (cause instanceof RegularFileCleanupFailure) {
-      const retry = await retryRegularFileCleanup(cause, resources);
+      const retry = await retryRegularFileCleanup(cause, resources, signal);
       const cleanup = {
         reason: retry.cleanup?.reason ?? errorMessage(cause.cleanupCause),
         incomplete: retry.cleanup !== undefined,
         cause: cause.cleanupCause,
       };
-      if (cause.outcome.kind === "completed")
-        return ok({ bytes: cause.outcome.value as Buffer, cleanup });
+      if (retry.outcome.kind === "completed")
+        return ok({ bytes: retry.outcome.value as Buffer, cleanup });
       const primary = captureReadFailure(
         path,
-        cause.outcome.cause,
+        retry.outcome.cause,
         signal,
         retry.cleanup === undefined ? { cause: cause.cleanupCause } : undefined,
       );

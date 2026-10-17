@@ -83,6 +83,12 @@ describe("curated Windows test lane", () => {
     );
   });
 
+  it("keeps packed bridge verification under the retained native runtime lease in the lane", async () => {
+    expect(await explicitPaths("windows")).toContain(
+      "tests/boundary/process/packedBridgeVerification.test.ts",
+    );
+  });
+
   it("keeps Windows runner cancellation coverage in the lane", async () => {
     expect(await explicitPaths("windows")).toEqual(
       expect.arrayContaining([

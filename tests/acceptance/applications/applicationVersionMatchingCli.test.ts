@@ -243,7 +243,7 @@ cliTest(
 );
 
 cliTest(
-  "matches an unchanged source module after a sibling file changes",
+  "retains exact source-module pairing while a changed sibling's identity is unresolved",
   async ({ cli }) => {
     const root = await createTestTempDirectory("rea-source-module-version-");
     const versions = await Promise.all(
@@ -309,17 +309,41 @@ cliTest(
       parseEvidence(response.json).normalized_result,
     );
 
-    expect(result.items).toContainEqual(
-      expect.objectContaining({
-        left_node_id: sourceModules[0]?.node_id,
-        right_node_id: sourceModules[1]?.node_id,
-        status: "unchanged",
-        match: expect.objectContaining({
-          status: "matched",
-          basis: "exact-module-source-digest",
-          confidence: "exact",
-        }),
-      }),
+    const item = result.items.find(
+      ({ left_node_id }) => left_node_id === sourceModules[0]?.node_id,
     );
+    expect(item).toMatchObject({
+      left_node_id: sourceModules[0]?.node_id,
+      right_node_id: sourceModules[1]?.node_id,
+      status: "unknown",
+      dimensions: [],
+      match: {
+        status: "matched",
+        basis: "exact-module-source-digest",
+        confidence: "exact",
+      },
+    });
+    expect(item?.limitations.join(" ")).toMatch(
+      /relationship.*identity.*unresolved/iu,
+    );
+    expect(result.coverage.status).toBe("complete-within-inputs");
+    const mainId = sourceModules[0]?.node_id;
+    const neighbors = new Set(
+      analyses[0]?.graph.edges.flatMap((edge) =>
+        edge.source_node_id === mainId
+          ? [edge.target_node_id]
+          : edge.target_node_id === mainId
+            ? [edge.source_node_id]
+            : [],
+      ),
+    );
+    expect(
+      result.items.some(
+        (other) =>
+          other.left_node_id !== null &&
+          neighbors.has(other.left_node_id) &&
+          other.match.status !== "matched",
+      ),
+    ).toBe(true);
   },
 );

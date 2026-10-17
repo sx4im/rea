@@ -93,11 +93,31 @@ const validateStringFacts = (entry: z.infer<typeof row>): void => {
 export type KunaStringItem = z.infer<typeof analysisStringSchema>;
 
 export interface KunaStringInventory {
+  /** Canonical address order, then encoding; identities are unique. */
   readonly items: readonly KunaStringItem[];
   readonly sha256: string;
   readonly bytes: number;
   readonly scanned: "sections" | "segments";
 }
+
+/** Locate every encoding at a canonical address without copying an index. */
+export const kunaStringsAtAddress = (
+  inventory: KunaStringInventory,
+  address: string,
+): KunaStringItem[] => {
+  const { items } = inventory;
+  let start = 0;
+  let end = items.length;
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (compareKunaAddresses(items[middle]!.address, address) < 0)
+      start = middle + 1;
+    else end = middle;
+  }
+  end = start;
+  while (end < items.length && items[end]!.address === address) end += 1;
+  return items.slice(start, end);
+};
 
 /** Validates `kuna strings --json` row by row as Kuna writes it. */
 export class KunaStringInventoryReader extends KunaJsonDocumentReader<KunaStringInventory> {

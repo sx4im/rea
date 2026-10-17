@@ -725,6 +725,39 @@ it.each([
     { code: true, package: true, runtime: true, apple: false },
   ],
   [
+    "scripts/verify-packed-bridge.mjs",
+    {
+      code: true,
+      package: true,
+      runtime: true,
+      apple: false,
+      evm: false,
+      browser: false,
+    },
+  ],
+  [
+    "scripts/verify-packed-bridge.d.mts",
+    {
+      code: true,
+      package: true,
+      runtime: true,
+      apple: false,
+      evm: false,
+      browser: false,
+    },
+  ],
+  [
+    "tests/boundary/process/packedBridgeVerification.test.ts",
+    {
+      code: true,
+      package: true,
+      runtime: true,
+      apple: false,
+      evm: false,
+      browser: false,
+    },
+  ],
+  [
     "src/process/ProcessOwnership.test.ts",
     { code: true, package: true, apple: false, evm: false, browser: false },
   ],

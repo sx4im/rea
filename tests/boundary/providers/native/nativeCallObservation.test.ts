@@ -11,6 +11,7 @@ import {
 } from "../../../../src/domain/analysisErrorCore.js";
 import type { AnalysisError } from "../../../../src/domain/analysisErrorBase.js";
 import { EvidenceIntegrityError } from "../../../../src/domain/evidenceErrors.js";
+import { nativeCallPartialObservationSchema } from "../../../../src/domain/native/nativeCallPartialObservation.js";
 import { nativeCallObservationResultSchema } from "../../../../src/domain/native/nativeCallObservation.js";
 import { err, ok, type Result } from "../../../../src/domain/result.js";
 import type {
@@ -461,5 +462,40 @@ describe("observe_native_calls failures", () => {
     expect(!cancelled.ok && cancelled.error).toBeInstanceOf(
       AnalysisCancelledError,
     );
+  });
+});
+
+it("retains completed call facts when cancellation arrives with the tracer result", async () => {
+  const controller = new AbortController();
+  const reason = { caller: "completed-trace-consumption" };
+  const recorded = new FixtureTracer();
+  const result = await observe(
+    {
+      trace: async (request) => {
+        const result = await recorded.trace(request);
+        controller.abort(reason);
+        return result;
+      },
+      close: () => recorded.close(),
+    },
+    { breakpoints: BREAKPOINTS },
+    undefined,
+    controller.signal,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("Expected completion cancellation");
+  expect(result.error).toMatchObject({
+    _tag: "AnalysisCancelledError",
+    cause: reason,
+  });
+  const partial = nativeCallPartialObservationSchema.parse(
+    result.error.partialObservation,
+  );
+  expect(partial.events).toHaveLength(1);
+  expect(partial.process.stdout?.text).toBe("hello\n");
+  expect(partial.process.terminated).toBe(true);
+  expect(partial.coverage).toMatchObject({
+    status: "partial",
+    reason: "cancelled",
   });
 });

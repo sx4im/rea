@@ -210,7 +210,7 @@ it("rejects an omitted auxiliary source at the actual package verification bound
       "--input-type=module",
       "-e",
       `import { verifyPackedBridge } from "./scripts/verify-packed-bridge.mjs";
-       await verifyPackedBridge({ workspace: ".", tarball: "unused-because-admission-must-fail", packedFiles: JSON.parse(process.argv[1]) });`,
+       await verifyPackedBridge({ tarball: "unused-because-admission-must-fail", packedFiles: JSON.parse(process.argv[1]) });`,
       JSON.stringify(packedFiles),
     ]),
   ).rejects.toMatchObject({

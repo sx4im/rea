@@ -13,6 +13,7 @@ import { readStableArtifact } from "../../../src/artifacts/readStableArtifact.js
 import {
   ArtifactFileCleanupFailure,
   ArtifactFileCancelled,
+  withArtifactFileHandle,
 } from "../../../src/artifacts/ArtifactFileOperation.js";
 import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -253,4 +254,42 @@ it("transfers the exact owner even when the caller's retention boundary rejects 
   file.release();
   await failure.cleanupLease.release();
   expect(file.handle.fd).toBe(-1);
+});
+
+it("does not turn a retention callback abort into completed-file cancellation", async () => {
+  const file = await heldDescriptor();
+  const controller = new AbortController();
+  class AbortingScope extends ArtifactResourceScope {
+    override retain(
+      owner: Parameters<ArtifactResourceScope["retain"]>[0],
+    ): void {
+      controller.abort(null);
+      super.retain(owner);
+    }
+  }
+  const scope = new AbortingScope();
+  try {
+    const failure: unknown = await withArtifactFileHandle(
+      file.path,
+      file.handle,
+      scope,
+      controller.signal,
+      async () => file.bytes,
+    ).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ArtifactFileCleanupFailure);
+    if (!(failure instanceof ArtifactFileCleanupFailure))
+      throw new Error("Missing file cleanup owner");
+    expect(failure.fileCleanupFailure.outcome).toEqual({
+      kind: "completed",
+      value: file.bytes,
+    });
+    expect(failure.fileCleanupFailure.completionCancellation).toBeUndefined();
+    expect(failure.reason).not.toBe("cancelled");
+    file.release();
+    await failure.cleanupLease.release();
+    expect(file.handle.fd).toBe(-1);
+  } finally {
+    file.release();
+    await scope.close();
+  }
 });

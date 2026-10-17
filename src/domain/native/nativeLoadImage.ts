@@ -136,3 +136,23 @@ export type NativeLoadImageObservation = z.infer<
 >;
 /** One independently compared native import fact. */
 export type NativeLoadImageCheck = z.infer<typeof nativeLoadImageCheckSchema>;
+
+/** Measured provider facts, or a completed comparison retained after interruption. */
+export const nativeLoadImagePartialObservationSchema = z.discriminatedUnion(
+  "stage",
+  [
+    z.strictObject({
+      kind: z.literal("native-load-image"),
+      stage: z.literal("measured"),
+      observations: nativeLoadImageObservationSchema,
+    }),
+    z.strictObject({
+      kind: z.literal("native-load-image"),
+      stage: z.literal("completed"),
+      result: nativeLoadImageSchema,
+    }),
+  ],
+);
+export type NativeLoadImagePartialObservation = z.infer<
+  typeof nativeLoadImagePartialObservationSchema
+>;

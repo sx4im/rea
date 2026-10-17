@@ -488,18 +488,16 @@ describe.skipIf(process.platform === "win32")(
           details: {
             diagnostics: {
               failure_cause: {
-                cause: {
-                  launch_support: expect.arrayContaining([
-                    expect.objectContaining({
-                      mode: "-envvars",
-                      stderr: `-envvars: ${warning}\n`,
-                    }),
-                    expect.objectContaining({
-                      mode: "-vmargs",
-                      stderr: `-vmargs: ${warning}\n`,
-                    }),
-                  ]),
-                },
+                launch_support: expect.arrayContaining([
+                  expect.objectContaining({
+                    mode: "-envvars",
+                    stderr: `-envvars: ${warning}\n`,
+                  }),
+                  expect.objectContaining({
+                    mode: "-vmargs",
+                    stderr: `-vmargs: ${warning}\n`,
+                  }),
+                ]),
               },
             },
           },

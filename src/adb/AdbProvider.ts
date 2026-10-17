@@ -56,11 +56,16 @@ import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.
 import { err, ok, type Result } from "../domain/result.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { jsonObjectSchema } from "../domain/jsonValue.js";
-import { hashStableFile } from "../filesystem/StableFileHash.js";
 import {
+  hashStableFile,
+  stableFileHashCause,
+} from "../filesystem/StableFileHash.js";
+import {
+  regularFileCancellation,
   RegularFileCancelled,
   RegularFileCleanupFailure,
 } from "../filesystem/OwnedRegularFile.js";
+import { RegularFileOperationCancelled } from "../filesystem/RegularFile.js";
 import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import { createEvidence } from "../domain/evidence.js";
 import {
@@ -182,9 +187,8 @@ const hashAdbFile = async (
     });
   } catch (cause: unknown) {
     if (
-      cause !== signal?.reason &&
-      (cause instanceof RegularFileCleanupFailure ||
-        cause instanceof RegularFileCancelled)
+      cause instanceof RegularFileCleanupFailure ||
+      cause instanceof RegularFileCancelled
     )
       throw new AdbDigestFailure(
         cause as
@@ -194,8 +198,8 @@ const hashAdbFile = async (
           closeLease?.bindCleanupError(error);
         },
       );
-    if (signal?.aborted === true)
-      throw new AnalysisCancelledError(operation, { cause });
+    if (cause instanceof RegularFileOperationCancelled)
+      throw new AnalysisCancelledError(operation, { cause: cause.reason });
     throw cause;
   }
 };
@@ -203,7 +207,6 @@ const hashAdbFile = async (
 const adbDigestError = (
   cause: unknown,
   operation: string,
-  signal: AbortSignal | undefined,
   partialObservation:
     | AdbAcquiredFilePartialObservation
     | AdbPackagePullPartialObservation,
@@ -238,12 +241,10 @@ const adbDigestError = (
   );
   const primaryCause =
     digestOutcome.kind === "failed" ? digestOutcome.cause : undefined;
-  if (
-    signal?.aborted === true ||
-    primaryCause instanceof AnalysisCancelledError
-  ) {
+  const cancellation = regularFileCancellation(digestFailure);
+  if (cancellation !== undefined) {
     const error = new AnalysisCancelledError(operation, {
-      cause: digestFailure,
+      cause: cancellation.reason,
       cleanup: { reason, resources: [resource] },
       partialObservation,
     });
@@ -258,7 +259,8 @@ const adbDigestError = (
           operation,
           `The pulled file could not be fully digested or its handle could not be closed: ${digestFailure.path}`,
           {
-            cause: primaryCause ?? digestFailure,
+            cause:
+              digestOutcome.kind === "failed" ? primaryCause : digestFailure,
             partialObservation,
           },
         );
@@ -1535,7 +1537,8 @@ export class AdbProvider {
               pkg_flags: details.pkgFlags,
               requested_permissions_count: details.requestedPermissions,
               coverage:
-                details.versionCode === null && details.versionName === null
+                details.requestedPermissions === null ||
+                (details.versionCode === null && details.versionName === null)
                   ? "partial"
                   : "complete",
             },
@@ -1543,7 +1546,8 @@ export class AdbProvider {
             {
               limitations: [
                 "Fields are a fixed projection of dumpsys package output; version-dependent sections are ignored rather than guessed",
-                "requested_permissions_count counts the listed requested permissions section only",
+                "requested_permissions_count counts the listed requested permissions section; an absent section is zero only when dumpsys confirms a loaded parsed package",
+                "A null requested_permissions_count means dumpsys reported pkg=null or did not establish that an omitted permission section is an empty inventory",
               ],
             },
           ),
@@ -1734,38 +1738,30 @@ export class AdbProvider {
         );
       }
       case "inspect_adb_window": {
-        let section = "windows";
+        let section: "windows" | "displays" = "windows";
         const ran = await shell(["dumpsys", "window", section], {
           timeoutMs: SHELL_TIMEOUT_MS,
           maxOutputBytes: DUMPSYS_WINDOW_MAX_OUTPUT_BYTES,
         });
         if (!ran.ok) return ran;
-        let { focusedWindow, focusedApp } = parseWindowFocusOutput(
-          ran.value.stdout,
-        );
-        if (focusedWindow === null && focusedApp === null) {
+        let focus = parseWindowFocusOutput(ran.value.stdout);
+        if (focus.focus_summary === "unavailable") {
           section = "displays";
           const fallback = await shell(["dumpsys", "window", section], {
             timeoutMs: SHELL_TIMEOUT_MS,
             maxOutputBytes: DUMPSYS_WINDOW_MAX_OUTPUT_BYTES,
           });
           if (!fallback.ok) return fallback;
-          ({ focusedWindow, focusedApp } = parseWindowFocusOutput(
-            fallback.value.stdout,
-          ));
+          focus = parseWindowFocusOutput(fallback.value.stdout);
         }
-        const declared = focusedWindow !== null || focusedApp !== null;
+        const declared = focus.focus_summary !== "unavailable";
         return ok(
           createAnalysisExecution(
             {
               client,
               serial: request.input.serial,
-              focused_window: focusedWindow,
-              focused_app: focusedApp,
-              observed_lines: [
-                ...(focusedWindow === null ? [] : [focusedWindow]),
-                ...(focusedApp === null ? [] : [focusedApp]),
-              ],
+              source_section: section,
+              ...focus,
             },
             provider,
             {
@@ -1774,6 +1770,11 @@ export class AdbProvider {
                 declared
                   ? `Focus declarations were read from \`dumpsys window ${section}\``
                   : "Neither `dumpsys window windows` nor `dumpsys window displays` declared mCurrentFocus or mFocusedApp; focus is unknown, not absent",
+                ...(focus.focus_summary === "ambiguous"
+                  ? [
+                      "Multiple focus contexts or repeated declarations prevent a singular focus summary; inspect focus_contexts for every declaration",
+                    ]
+                  : []),
               ],
             },
           ),
@@ -2085,7 +2086,14 @@ export class AdbProvider {
       device_path: string | null;
       stage: "resolve_paths" | "pull" | "digest";
       message: string;
+      cause: unknown;
     }[] = [];
+    const observedFailures = () =>
+      failures.map(({ device_path, stage, message }) => ({
+        device_path,
+        stage,
+        message,
+      }));
     const cancelledPackagePull = (
       error: AnalysisCancelledError,
       localPath: string,
@@ -2102,7 +2110,7 @@ export class AdbProvider {
           output_directory: directory.value,
           artifacts,
           failures: [
-            ...failures,
+            ...observedFailures(),
             {
               device_path: devicePath,
               stage,
@@ -2139,6 +2147,7 @@ export class AdbProvider {
           device_path: entry.device_path,
           stage: "pull",
           message: pulled.error.message,
+          cause: pulled.error,
         });
         continue;
       }
@@ -2189,7 +2198,7 @@ export class AdbProvider {
                     },
                   ],
             failures: [
-              ...failures,
+              ...observedFailures(),
               {
                 device_path: entry.device_path,
                 stage: "digest",
@@ -2207,7 +2216,6 @@ export class AdbProvider {
         const cleanupError = adbDigestError(
           cause,
           operation,
-          signal,
           partialObservation,
         );
         if (cleanupError !== undefined) return err(cleanupError);
@@ -2218,16 +2226,24 @@ export class AdbProvider {
             entry.device_path,
             "digest",
           );
+        const physicalCause = stableFileHashCause(cause);
         failures.push({
           device_path: entry.device_path,
           stage: "digest",
-          message: `The pulled file could not be read back after pulling: ${localPath}`,
+          message: `The pulled file could not be read back after pulling: ${localPath}: ${physicalCause instanceof Error ? physicalCause.message : String(physicalCause)}`,
+          cause,
         });
       }
     }
     if (artifacts.length === 0 && failures.length > 0) {
       const primary = new AnalysisProtocolError(
         `Every APK pull failed for ${packageName} on ${serial}: ${failures[0]!.message}`,
+        {
+          cause: new AggregateError(
+            failures.map(({ cause }) => cause),
+            "APK pulls failed",
+          ),
+        },
       );
       return failOwnedPackage(primary);
     }
@@ -2239,7 +2255,7 @@ export class AdbProvider {
           package_name: packageName,
           output_directory: directory.value,
           artifacts,
-          failures,
+          failures: observedFailures(),
           coverage: failures.length === 0 ? "complete" : "partial",
         },
         provider,
@@ -2330,12 +2346,7 @@ export class AdbProvider {
           digest_status: "unknown",
         },
       };
-      const cleanupError = adbDigestError(
-        cause,
-        operation,
-        signal,
-        partialObservation,
-      );
+      const cleanupError = adbDigestError(cause, operation, partialObservation);
       if (cleanupError !== undefined) return err(cleanupError);
       if (cause instanceof AnalysisCancelledError) {
         cause.retainPartialObservation(partialObservation);
@@ -2612,7 +2623,14 @@ export class AdbProvider {
       operation,
       input.serial,
       selection.binary,
-      adbArguments(input.serial, ["uninstall", input.package]),
+      adbArguments(input.serial, [
+        "shell",
+        "pm",
+        "uninstall",
+        "--user",
+        "0",
+        input.package,
+      ]),
       {
         timeoutMs: PACKAGE_LIST_TIMEOUT_MS,
         maxOutputBytes: PULL_MAX_OUTPUT_BYTES,
@@ -2643,7 +2661,7 @@ export class AdbProvider {
         provider,
         {
           limitations: [
-            "Uninstall removes the package and its data for user 0; keeping data (-k) is not exposed",
+            "Uninstall explicitly requests user 0 without data retention (-k); device enforcement is not independently verified",
           ],
         },
       ),
@@ -3145,7 +3163,7 @@ export class AdbProvider {
         const cleanupError =
           retainedObservation === undefined
             ? undefined
-            : adbDigestError(cause, operation, signal, retainedObservation);
+            : adbDigestError(cause, operation, retainedObservation);
         if (cleanupError !== undefined) return err(cleanupError);
         if (cause instanceof AnalysisCancelledError) {
           if (retainedObservation !== undefined)

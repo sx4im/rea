@@ -6,11 +6,10 @@ import { withCommandCancellation } from "./cli/commandCancellation.js";
 import { CLI_COMMANDS } from "./cliCommandNames.js";
 import { parseCliJsonInput, resolveCliJsonPaths } from "./cliJsonInput.js";
 import { logCliCommand } from "./cliLogging.js";
-import { AnalysisInputError } from "./domain/analysisErrorCore.js";
 import { AnalysisError } from "./domain/analysisErrorBase.js";
 import { projectAnalysisError } from "./domain/analysisErrorProjection.js";
 import { BrowserObservationError } from "./domain/browserObservationError.js";
-import { projectInputIssues } from "./domain/inputIssueProjection.js";
+import { analysisInputErrorFromIssues } from "./domain/inputIssueProjection.js";
 import { browserScenarioSchema } from "./domain/browserScenario.js";
 import type { JsonValue } from "./domain/jsonValue.js";
 import type { Logger } from "pino";
@@ -41,10 +40,11 @@ export const registerBrowserScenarioCommands = (
           );
           if (!scenario.success)
             return cliError(
-              new AnalysisInputError(
+              analysisInputErrorFromIssues(
                 OPERATION,
+                scenario.error.issues,
+                input.value,
                 { cause: scenario.error },
-                projectInputIssues(scenario.error.issues, input.value),
               ),
             );
           // Load Playwright only for this command, not during CLI startup.

@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import { connectLocalToolsMcp } from "../../fixtures/localToolsMcp.js";
 import { writeFixtureFiles } from "../../support/javascriptApplicationFixture.js";
 import { cliTest, type TestCli } from "../../support/cli/cliFixture.js";
 import { javascriptApplicationAnalysisResultSchema } from "../../../src/domain/javascript/javascriptApplicationAnalysis.js";
@@ -265,7 +266,10 @@ cliTest(
       },
     ] as const;
 
-    for (const surface of ["CLI", "stdio MCP"] as const)
+    for (const surface of ["CLI", "stdio MCP"] as const) {
+      const connection =
+        surface === "stdio MCP" ? await connectLocalToolsMcp() : undefined;
+      const artifacts = new Set<string>();
       for (const fixture of cases) {
         const root = await createTestTempDirectory(
           "rea-electron-early-return-",
@@ -277,7 +281,11 @@ cliTest(
           surface,
           cli,
           root,
+          connection?.call,
         );
+        expect(application.input_path).toBe(root);
+        expect(artifacts.has(application.root_artifact_sha256)).toBe(false);
+        artifacts.add(application.root_artifact_sha256);
         const observations = application.graph.nodes.flatMap(
           (node) => node.observations,
         );
@@ -306,6 +314,7 @@ cliTest(
         );
         expect(source?.properties.parse_status).toBe(fixture.coverage);
       }
+    }
   },
 );
 
@@ -497,6 +506,8 @@ for (const surface of ["CLI", "stdio MCP"] as const) {
   cliTest(
     `retains explicit nested contextBridge members after an unknown spread through ${surface}`,
     async ({ cli }) => {
+      const connection =
+        surface === "stdio MCP" ? await connectLocalToolsMcp() : undefined;
       const analyzeBridge = async (api: string) => {
         const root = await createTestTempDirectory(
           "rea-electron-spread-bridge-members-",
@@ -506,10 +517,20 @@ for (const surface of ["CLI", "stdio MCP"] as const) {
             const extra = getExtra();
             contextBridge.exposeInMainWorld("api", ${api});`,
         });
-        return analyzeJavaScriptDirectory(surface, cli, root);
+        const application = await analyzeJavaScriptDirectory(
+          surface,
+          cli,
+          root,
+          connection?.call,
+        );
+        expect(application.input_path).toBe(root);
+        return application;
       };
       const withSpread = await analyzeBridge("{ ...extra, a: { b: 1 }, c: 2 }");
       const control = await analyzeBridge("{ a: { b: 1 }, c: 2 }");
+      expect(control.root_artifact_sha256).not.toBe(
+        withSpread.root_artifact_sha256,
+      );
 
       const bridgeObservation = (application: typeof withSpread) =>
         application.graph.nodes

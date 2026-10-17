@@ -166,6 +166,7 @@ export const JAVASCRIPT_APPLICATION_EVIDENCE_EXAMPLE = createEvidence(
         text_bytes_read: script.bytes,
         invalid_utf8_files: 0,
         parsed_javascript_files: 1,
+        skipped_javascript_files: 0,
         visited_ast_nodes: 1,
         findings: 0,
         modules: 0,

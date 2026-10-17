@@ -1,9 +1,5 @@
-import {
-  DOMParser,
-  type Document,
-  type Element,
-  type Node,
-} from "@xmldom/xmldom";
+import type { Document, Element, Node } from "@xmldom/xmldom";
+import { parseXmlDocument } from "../domain/xmlDocument.js";
 import {
   isMap,
   isScalar,
@@ -147,16 +143,16 @@ const yamlScalar = (
 };
 
 const parseXml = (xml: string, label: string) => {
-  const errors: string[] = [];
-  const document = new DOMParser({
-    normalizeLineEndings: (source) => source,
-    onError: (_level, message) => errors.push(message),
-  }).parseFromString(xml, "application/xml");
-  if (errors.length > 0 || document.documentElement === null)
+  const parsed = parseXmlDocument(xml, {
+    doctype: "allow",
+    lineEndings: "preserve",
+  });
+  if (!parsed.ok)
     throw new TypeError(
-      `${label} is not well-formed XML${errors[0] === undefined ? "" : `: ${errors[0]}`}`,
+      `${label} is not well-formed XML: ${parsed.error.message}`,
+      { cause: parsed.error },
     );
-  return document;
+  return parsed.value;
 };
 
 const childNodes = (node: Node): Node[] => {

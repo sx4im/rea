@@ -11,8 +11,12 @@ import { join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 
 import { ApktoolProvider } from "./ApktoolProvider.js";
+import { ApktoolResourceAnalysisService } from "../application/apktool/ApktoolResourceAnalysisService.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
-import { apktoolRequestSchema } from "../domain/apktool/apktoolResourceAnalysis.js";
+import {
+  apktoolRequestSchema,
+  apktoolResultSchemas,
+} from "../domain/apktool/apktoolResourceAnalysis.js";
 import type { ApktoolRequest } from "../domain/apktool/apktoolResourceAnalysis.js";
 
 const it = test.skipIf(process.platform === "win32");
@@ -263,6 +267,59 @@ it("preserves empty resource strings and reports markup omissions as partial", a
   expect(result.coverage).toBe("partial");
 });
 
+it("preserves literal U+FFFD in decoded XML with complete coverage", async () => {
+  const stringsXml =
+    '<resources><string name="good">Hello</string><string name="edge">\uFFFD</string></resources>';
+  const { command, root } = await writeApktoolStub((root) =>
+    decodeStub({
+      stringsXml,
+      manifestFile: join(root, "AndroidManifest.xml"),
+    })(root),
+  );
+  const manifest = REAL_MANIFEST.replace("@string/app_name", "\uFFFD");
+  await writeFile(join(root, "AndroidManifest.xml"), manifest, "utf8");
+  const apk = await apkFixture(root);
+  const result = await evidenceResult(providerOver(command), {
+    operation: "decode_android_resources",
+    input: { path: apk.path, include_strings: true },
+  });
+  expect(result).toMatchObject({
+    manifest,
+    metadata: { package_name: "com.rea.apktool.probe" },
+    strings: [
+      { name: "good", value: "Hello" },
+      { name: "edge", value: "\uFFFD" },
+    ],
+    coverage: "complete",
+  });
+});
+
+it("still refuses invalid UTF-8 bytes in decoded strings", async () => {
+  const { command, root } = await writeApktoolStub((root) =>
+    decodeStub({ stringsFile: join(root, "strings.xml") })(root),
+  );
+  await writeFile(
+    join(root, "strings.xml"),
+    Buffer.concat([
+      Buffer.from('<resources><string name="bad">'),
+      Buffer.from([0xff]),
+      Buffer.from("</string></resources>"),
+    ]),
+  );
+  const apk = await apkFixture(root);
+  const result = await providerOver(command).execute({
+    operation: "decode_android_resources",
+    input: { path: apk.path, include_strings: true },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected a refusal");
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "unreadable_output",
+  });
+  expect(result.error.message).toContain("invalid UTF-8");
+  expect(result.error.message).toContain("strings.xml");
+});
+
 it("ignores Android resource qualifiers when discovering locales", async () => {
   const { command, root } = await writeApktoolStub(
     decodeStub({ extraValuesDirectories: ["car", "night", "v21"] }),
@@ -438,10 +495,26 @@ it("uses an owned APK snapshot and framework cache and resolves regional locales
     ),
   );
   const apk = await apkFixture(root);
-  const result = await evidenceResult(providerOver(command), {
-    operation: "decode_android_resources",
-    input: { path: apk.path, include_strings: true, locale: "pt-BR" },
+  const observation = await new ApktoolResourceAnalysisService(
+    providerOver(command),
+  ).execute("decode_android_resources", {
+    path: apk.path,
+    include_strings: true,
+    locale: "pt-BR",
   });
+  if (!observation.ok) throw observation.error;
+  expect(observation.value.subject).toMatchObject({
+    local_path: apk.path,
+    format: "apk",
+    digest: { sha256: apk.sha256 },
+  });
+  expect(observation.value.limitations).not.toContain(
+    "Artifact identity is unavailable for this observation.",
+  );
+  expect(await readFile(apk.path, "utf8")).toBe("changed original");
+  const result = apktoolResultSchemas.decode_android_resources.parse(
+    observation.value.normalized_result,
+  );
   expect(result.target).toMatchObject({
     sha256: apk.sha256,
     bytes: apk.bytes,

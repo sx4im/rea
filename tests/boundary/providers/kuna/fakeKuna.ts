@@ -19,7 +19,7 @@ export interface FakeKunaString {
 export interface FakeKunaBehavior {
   /** Text printed by `--version`; `exit` fails the probe instead. */
   readonly version?:
-    | { readonly stdout: string }
+    | { readonly stdout: string; readonly gate?: string }
     | { readonly exit: number }
     | { readonly ignoreTerm: true };
   readonly inventory?: "ok" | "not-json" | "hang";
@@ -95,7 +95,13 @@ if (args[0] === "--version") {
   const version = behavior.version ?? { stdout: "kuna 1.833\n" };
   if ("exit" in version) { process.stderr.write("version probe failed\n"); process.exit(version.exit); }
   if ("ignoreTerm" in version) { process.on("SIGTERM", () => {}); hang(); }
-  else process.stdout.write(version.stdout);
+  else if (version.gate) {
+    const waiting = setInterval(() => {
+      if (!fs.existsSync(version.gate)) return;
+      clearInterval(waiting);
+      process.stdout.write(version.stdout);
+    }, 10);
+  } else process.stdout.write(version.stdout);
 } else if (args[0] === "functions") {
   const mode = behavior.inventory ?? "ok";
   if (mode === "hang") hang();

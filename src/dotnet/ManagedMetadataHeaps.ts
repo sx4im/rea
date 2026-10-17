@@ -125,7 +125,6 @@ export const readMetadataString = (
   const start = layout.strings.offset + index;
   const cached = managedDecodeBudget(layout).cachedString(index);
   if (cached !== undefined && cached.encodedBytes <= heapExtent) {
-    managedDecodeBudget(layout).reserveString(cached.encodedBytes, start);
     return cached.value;
   }
   const maximum = Math.min(

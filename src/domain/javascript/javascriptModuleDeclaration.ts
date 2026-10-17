@@ -1,5 +1,20 @@
 import * as t from "@babel/types";
 
+/** Declaration syntax that establishes no runtime value, regardless of export form. */
+export const isErasedJavaScriptDeclaration = (node: t.Node): boolean =>
+  t.isTSInterfaceDeclaration(node) ||
+  t.isTSTypeAliasDeclaration(node) ||
+  t.isTSDeclareFunction(node) ||
+  ((t.isVariableDeclaration(node) ||
+    t.isClassDeclaration(node) ||
+    t.isTSEnumDeclaration(node) ||
+    t.isTSModuleDeclaration(node)) &&
+    node.declare === true);
+
+/** Namespace/enum lowering introduces runtime scopes absent from this source index. */
+export const isUnmodeledJavaScriptRuntimeScope = (node: t.Node): boolean =>
+  t.isTSModuleDeclaration(node) || t.isTSEnumDeclaration(node);
+
 /** Whether TypeScript explicitly erases this entire import declaration. */
 export const isTypeOnlyImportDeclaration = (
   node: t.ImportDeclaration,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import writeFileAtomic from "write-file-atomic";
 
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { analysisClientFailureContext } from "../providers/AnalysisClientFailure.js";
 import { AnalysisCapabilityUnavailableError } from "../domain/analysisErrorCore.js";
 import {
   HopperCancelledError,
@@ -608,17 +609,24 @@ export class HopperClient {
     name: string,
     result: Result<JsonValue, AnalysisError>,
   ): Result<JsonValue, AnalysisError> {
-    return !result.ok &&
-      result.error instanceof HopperRemoteError &&
-      result.error.diagnosticType === "capability_unavailable"
-      ? err(
-          new AnalysisCapabilityUnavailableError(
-            "hopper",
-            name,
-            result.error.safeMessage,
-          ),
-        )
-      : result;
+    if (
+      result.ok ||
+      !(result.error instanceof HopperRemoteError) ||
+      result.error.diagnosticType !== "capability_unavailable"
+    )
+      return result;
+    const source = result.error;
+    const failure = new AnalysisCapabilityUnavailableError(
+      "hopper",
+      name,
+      source.safeMessage,
+      analysisClientFailureContext(source, "hopper", name),
+    );
+    return err(
+      source.cleanupIncomplete
+        ? failure.bindCleanupDependencies([source])
+        : failure,
+    );
   }
 
   /** Stop the bridge and report whether every owned resource was verified clean. */

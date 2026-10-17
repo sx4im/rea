@@ -33,6 +33,16 @@ const run = async (operation, input) => {
     failures += 1;
     return null;
   }
+  if (operation === "decode_android_resources") {
+    const evidence = result.value;
+    const target = evidence.normalized_result.target;
+    check(
+      "resource Evidence preserves the decoded APK subject identity",
+      evidence.subject?.digest.sha256 === target.sha256 &&
+        evidence.subject?.local_path === target.path &&
+        evidence.subject?.format === "apk",
+    );
+  }
   return result.value.normalized_result;
 };
 

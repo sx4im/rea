@@ -1,3 +1,4 @@
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
 import { mkdtemp, realpath, rm, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -597,10 +598,11 @@ export class NativeDmgArtifactReader implements ArtifactReader {
     } catch (cause: unknown) {
       if (cause instanceof RegularFileAdmissionFailure) {
         this.#verificationProbeHandle = cause.owner;
+        const cancellation = regularFileCancellation(cause.cause);
         const failure =
-          signal?.aborted === true
-            ? this.#cancelledVerification(signal.reason)
-            : primaryFailure;
+          cancellation === undefined
+            ? primaryFailure
+            : this.#cancelledVerification(cancellation.reason);
         throw ArtifactReaderFailure.withCleanup(
           failure,
           ArtifactReaderFailure.cleanupObservation(
@@ -609,8 +611,9 @@ export class NativeDmgArtifactReader implements ArtifactReader {
           ),
         );
       }
-      if (signal?.aborted === true)
-        throw this.#cancelledVerification(signal.reason);
+      const cancellation = regularFileCancellation(cause);
+      if (cancellation !== undefined)
+        throw this.#cancelledVerification(cancellation.reason);
       if (cause instanceof NonRegularFileReadError) return false;
       return classifyCommandFailure(cause, undefined).reason === "io";
     }

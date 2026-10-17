@@ -227,12 +227,14 @@ describe("native UI capture selection and budgets", () => {
         },
       },
     );
-    expect(result.ok).toBe(true);
-    if (result.ok)
-      expect(result.value.steps[0]).toMatchObject({
-        kind: "wait",
-        outcome: "cancelled",
-      });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected scenario cancellation");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(controller.signal.reason);
+    expect(result.error.partialObservation).toMatchObject({
+      initial: snapshot,
+      steps: [{ kind: "wait", outcome: "cancelled" }],
+    });
   });
   it("reports aggregate output exhaustion after individually valid captures", async () => {
     const largeSnapshot = {
@@ -251,12 +253,18 @@ describe("native UI capture selection and budgets", () => {
         invoke: async () => ({ ok: true, result: largeSnapshot }),
       },
     );
-    expect(result.ok).toBe(true);
-    if (result.ok)
-      expect(result.value.steps[0]).toMatchObject({
-        outcome: "failed",
-        reason: expect.stringContaining("64 MiB output budget"),
-      });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected scenario output limit failure");
+    expect(result.error._tag).toBe("AnalysisCapabilityUnavailableError");
+    expect(result.error.partialObservation).toMatchObject({
+      initial: largeSnapshot,
+      steps: [
+        {
+          outcome: "failed",
+          reason: expect.stringContaining("64 MiB output budget"),
+        },
+      ],
+    });
   });
 });
 
@@ -327,11 +335,13 @@ describe("native UI target and cancellation failures", () => {
       launch_time: 1,
       action: { kind: "scroll", path: [1] },
     });
-    expect(result.ok).toBe(true);
-    if (result.ok)
-      expect(result.value.steps).toMatchObject([
-        { index: 0, outcome: "failed", before: snapshot, after: null },
-      ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected failed action");
+    expect(result.error._tag).toBe("AnalysisCapabilityUnavailableError");
+    expect(result.error.partialObservation).toMatchObject({
+      initial: snapshot,
+      steps: [{ index: 0, outcome: "failed", before: snapshot, after: null }],
+    });
   });
   it("rejects target replacement and stops subsequent actions after cancellation", async () => {
     const controller = new AbortController();
@@ -357,8 +367,14 @@ describe("native UI target and cancellation failures", () => {
       },
     );
     expect(calls).toBe(1);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.value.steps[0]?.outcome).toBe("cancelled");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected scenario cancellation");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(controller.signal.reason);
+    expect(result.error.partialObservation).toMatchObject({
+      initial: snapshot,
+      steps: [{ outcome: "cancelled" }],
+    });
     const replaced = await observeNativeUi(target, "observe_native_ui", scope, {
       environment: {},
       invoke: async () => ({

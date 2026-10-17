@@ -111,11 +111,16 @@ const STDERR_EXCERPT_LIMIT = 512;
 
 /** The native Darwin process-ownership reader could not be prepared. */
 export class DarwinProcessOwnershipInspectionError extends Error {
+  readonly #cleanupOwner: { close(): Promise<void> } | undefined;
+  get cleanupOwner(): { close(): Promise<void> } | undefined {
+    return this.#cleanupOwner;
+  }
   constructor(
     message: string,
     options?: ErrorOptions & {
       readonly compilerOutcome?: DarwinCompilerOutcome;
       readonly capturedOutput?: AnalysisCapturedOutput;
+      readonly cleanupOwner?: { close(): Promise<void> } | undefined;
       readonly cleanupFailure?: AnalysisError;
       readonly cancellation?: { readonly reason: unknown };
     },
@@ -124,6 +129,7 @@ export class DarwinProcessOwnershipInspectionError extends Error {
       compilerOutcome,
       capturedOutput,
       cleanupFailure,
+      cleanupOwner,
       cancellation,
       ...errorOptions
     } = options ?? {};
@@ -131,6 +137,7 @@ export class DarwinProcessOwnershipInspectionError extends Error {
     this.name = "DarwinProcessOwnershipInspectionError";
     this.compilerOutcome = compilerOutcome;
     this.capturedOutput = capturedOutput;
+    this.#cleanupOwner = cleanupOwner;
     this.cleanupFailure = cleanupFailure;
     this.cancellation = cancellation;
   }
@@ -143,6 +150,7 @@ export class DarwinProcessOwnershipInspectionError extends Error {
   /** Preserve the physical preparation failure while following the exact cleanup owner. */
   withCleanupFailure(
     cleanup: AnalysisError,
+    owner?: { close(): Promise<void> },
   ): DarwinProcessOwnershipInspectionError {
     const combined =
       this.cleanupFailure === undefined || this.cleanupFailure === cleanup
@@ -160,6 +168,7 @@ export class DarwinProcessOwnershipInspectionError extends Error {
         ? {}
         : { capturedOutput: this.capturedOutput }),
       cleanupFailure: combined,
+      cleanupOwner: owner ?? this.cleanupOwner,
       ...(this.cancellation === undefined
         ? {}
         : { cancellation: this.cancellation }),
@@ -504,7 +513,9 @@ export const createDarwinProcessRunTokenReader = (
                   "Darwin process ownership helper preparation failed",
                   { cause },
                 );
-          throw primary.withCleanupFailure(cleanup);
+          throw primary.withCleanupFailure(cleanup, {
+            close: () => cleanupRoot(operationRoot),
+          });
         }
       }
       throw cause;
@@ -578,6 +589,7 @@ export const createDarwinProcessRunTokenReader = (
               cause: waited.reason,
               cancellation: { reason: waited.reason },
               cleanupFailure: finalized.error.cleanupFailure,
+              cleanupOwner: finalized.error.cleanupOwner,
             },
           );
         }

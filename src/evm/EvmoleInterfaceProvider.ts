@@ -31,7 +31,7 @@ import {
   AnalysisOutputError,
 } from "../domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
-import { createEvidence } from "../domain/evidence.js";
+import { evmInterfaceEvidence } from "../application/evm/EvmInterfaceEvidence.js";
 import type { InspectEvmInterfaceInput } from "../domain/evm/evmInterface.js";
 import { evmInterfaceSchema } from "../domain/evm/evmInterface.js";
 import { solidityMetadataSchema } from "../domain/evm/solidityMetadata.js";
@@ -95,20 +95,6 @@ const compactErrorProjection = (error: AnalysisError) => {
   return { ...projection, details };
 };
 
-const evmExecutionEvidence = (
-  input: InspectEvmInterfaceInput,
-  execution: EvmInterfaceExecution,
-) =>
-  createEvidence(execution.subject ?? undefined, execution.provider, {
-    operation: OPERATION,
-    parameters: input,
-    result: execution.result,
-    ...(execution.rawResult === null ? {} : { rawResult: execution.rawResult }),
-    confidence: "inferred",
-    locations: execution.locations,
-    limitations: execution.limitations,
-  });
-
 const evmCleanupFailure = (
   input: InspectEvmInterfaceInput,
   result: EvmOutcome,
@@ -118,7 +104,7 @@ const evmCleanupFailure = (
   cause?: unknown,
 ): ProviderCleanupError => {
   const partialObservation = result.ok
-    ? evmExecutionEvidence(input, result.value)
+    ? evmInterfaceEvidence(input, result.value)
     : result.error.partialObservation;
   const capturedOutput = result.ok
     ? output
@@ -204,7 +190,10 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
       this.environment.REA_EVM_PRLIMIT_COMMAND ?? "/usr/bin/prlimit";
     let result: Result<EvmInterfaceExecution, AnalysisError>;
     try {
-      if (options?.signal?.aborted) throw new AnalysisCancelledError(OPERATION);
+      if (options?.signal?.aborted)
+        throw new AnalysisCancelledError(OPERATION, {
+          cause: options.signal.reason,
+        });
       if (process.platform !== "linux" || process.arch !== "x64")
         throw new AnalysisCapabilityUnavailableError(
           EVMOLE_PROVIDER_IDENTITY.id,
@@ -574,12 +563,13 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
     }
     return result.ok && options?.signal?.aborted
       ? err(
-          new AnalysisCancelledError(
-            OPERATION,
-            retainedOutput === undefined
-              ? undefined
-              : { capturedOutput: retainedOutput },
-          ),
+          new AnalysisCancelledError(OPERATION, {
+            cause: options.signal.reason,
+            partialObservation: evmInterfaceEvidence(input, result.value),
+            ...(retainedOutput === undefined
+              ? {}
+              : { capturedOutput: retainedOutput }),
+          }),
         )
       : result;
   }

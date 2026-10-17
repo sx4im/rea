@@ -20,6 +20,7 @@ const sameIdentity = (stats: Stats, identity: Identity): boolean =>
 export class OwnedStagedOutput {
   #file: OwnedFileHandle | undefined;
   #fileIdentity: Identity | undefined;
+  #fileClosed = false;
   #fileRemovedByOwner = false;
   #publishedRename = false;
   #closeAttempt: Promise<void> | undefined;
@@ -45,19 +46,13 @@ export class OwnedStagedOutput {
     }
   }
 
-  async setFile(file: OwnedFileHandle): Promise<void> {
+  setFile(file: OwnedFileHandle): void {
     if (this.#file !== undefined)
       throw new Error("Staged output already owns a file handle");
     this.#file = file;
-    try {
-      this.#fileIdentity = identityOf(await file.handle.stat());
-    } catch (cause: unknown) {
-      // The handle remains owned; cleanup will close it and refuse pathname removal.
-      this.#identityFailure = cause;
-    }
   }
 
-  /** Verify that the path still names the exact closed file before publication. */
+  /** Verify that the path still names the file its descriptor observed at close. */
   async assertReadyForPublication(content: string): Promise<void> {
     await this.#verifiedDirectory();
     if (this.#fileIdentity === undefined)
@@ -73,8 +68,21 @@ export class OwnedStagedOutput {
       throw new Error(`Staged file identity changed: ${content}`);
   }
 
-  closeFile(): Promise<void> {
-    return this.#file?.close() ?? Promise.resolve();
+  /** Observe the descriptor's identity after its last write, then close it. */
+  async closeFile(): Promise<void> {
+    const file = this.#file;
+    if (file === undefined || this.#fileClosed) return;
+    // FAT and exFAT assign a file ID when the first write allocates storage,
+    // so only the descriptor's final identity can prove the staged pathname.
+    try {
+      this.#fileIdentity = identityOf(await file.handle.stat());
+    } catch (cause: unknown) {
+      // The handle remains owned; cleanup will close it and refuse pathname removal.
+      this.#fileIdentity = undefined;
+      this.#identityFailure = cause;
+    }
+    await file.close();
+    this.#fileClosed = true;
   }
 
   /** Record that the staged file moved to the published destination by rename. */

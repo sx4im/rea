@@ -9,6 +9,7 @@ import { err } from "../domain/result.js";
 import type { BrowserScenarioCapturePort } from "../application/BrowserScenarioCapturePort.js";
 import { captureBrowserScenario } from "../application/BrowserScenarioCaptureService.js";
 import { toolContract } from "../contracts/toolContracts.js";
+import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 import { browserScenarioSchema } from "../domain/browserScenario.js";
 import type { Logger } from "pino";
 import { logToolExecution } from "./toolLogging.js";
@@ -35,7 +36,20 @@ export const registerBrowserScenarioTool = (
     contract.name,
     toolRegistrationOptions(contract),
     async (input, context) => {
-      const scenario = browserScenarioSchema.parse(input);
+      const parsedScenario = browserScenarioSchema.safeParse(input);
+      if (!parsedScenario.success)
+        return server.delivery.toCallToolResult(
+          err(
+            analysisInputErrorFromIssues(
+              contract.name,
+              parsedScenario.error.issues,
+              input,
+              { cause: parsedScenario.error },
+            ),
+          ),
+          contract,
+        );
+      const scenario = parsedScenario.data;
       if (options.loadFailure !== undefined)
         return server.delivery.toCallToolResult(
           err(optionalProviderUnavailable(options.loadFailure, contract.name)),

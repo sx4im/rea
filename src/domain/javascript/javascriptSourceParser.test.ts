@@ -1,7 +1,52 @@
 import { expect, it } from "vitest";
+import * as t from "@babel/types";
 
-import { parseJavaScriptSource } from "./javascriptSourceParser.js";
+import {
+  parseJavaScriptSource,
+  parseRecoveredJavaScript,
+  parserPluginsForPath,
+  javaScriptRuntimeContext,
+} from "./javascriptSourceParser.js";
 import { analyzeParsedJavaScriptStaticSource } from "./javascriptStaticAnalysis.js";
+
+it.each([
+  ['import type {T} from "example";', "fixture.cts", "commonjs"],
+  ['import type {T} from "example";', "fixture.mts", "module"],
+  ['import type {T} from "example";', "fixture.ts", "unknown"],
+  ['import cp = require("node:child_process");', "fixture.ts", "module"],
+  ['import type cp = require("node:child_process");', "fixture.ts", "unknown"],
+  ["const value=[]; export = value;", "fixture.ts", "commonjs"],
+  ['export type {T} from "example";', "fixture.ts", "unknown"],
+  ['import {type T} from "example";', "fixture.ts", "unknown"],
+  ['export {type T} from "example";', "fixture.ts", "unknown"],
+  ["export declare const value: unknown;", "fixture.ts", "unknown"],
+  ["export default function f(): void;", "fixture.ts", "unknown"],
+  ["export default interface I {}", "fixture.ts", "unknown"],
+  ["export default function f() {}", "fixture.ts", "module"],
+  ["export default class C {}", "fixture.ts", "module"],
+  ['import {} from "example";', "fixture.js", "module"],
+  ['import {} from "example";', "fixture.cjs", "commonjs"],
+  ["export {};", "fixture.ts", "module"],
+  ["const value = 1;", "fixture.mjs", "module"],
+  ["const value = 1;", "fixture.js", "unknown"],
+  ["const value = 1;", "fixture.cjs", "commonjs"],
+  ["const value = 1;", "fixture.cts", "commonjs"],
+  ["declare const value: unknown;", "fixture.d.cts", "unknown"],
+] as const)(
+  "keeps runtime context consistent across parser entries: %s (%s)",
+  (source, path, context) => {
+    const parsed = parseJavaScriptSource(source, path);
+    if (parsed === null) throw new Error("Expected parsed source");
+    const recovered = parseRecoveredJavaScript(source, path, {
+      plugins: parserPluginsForPath(path),
+    }).file;
+    expect(javaScriptRuntimeContext(parsed.program)).toBe(context);
+    expect(javaScriptRuntimeContext(recovered.program)).toBe(context);
+    expect(javaScriptRuntimeContext(t.cloneNode(parsed.program, true))).toBe(
+      "unknown",
+    );
+  },
+);
 
 const analyze = (source: string, path: string) => {
   const parsed = parseJavaScriptSource(source, path);

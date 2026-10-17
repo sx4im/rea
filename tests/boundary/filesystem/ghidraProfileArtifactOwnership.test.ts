@@ -7,7 +7,14 @@ import { GhidraProvider } from "../../../src/ghidra/GhidraProvider.js";
 import { ghidraProfileInstallationHost } from "../../../src/ghidra/GhidraInstallation.fixture.js";
 import { silentLogger } from "../../../src/logger.js";
 import { createDeferred } from "../../fixtures/binarySession.js";
-import { readFile, rename, writeFile, type FileHandle } from "node:fs/promises";
+import { STARTUP_OWNER_CLOSED } from "../../../src/process/SharedStartupAttempt.js";
+import {
+  readFile,
+  rename,
+  truncate,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
@@ -15,6 +22,7 @@ import { parseConfig } from "../../../src/config/parseConfig.js";
 import {
   resolveGhidraAnalysisSeeds,
   snapshotGhidraAnalysisSeeds,
+  MAX_GHIDRA_SEED_BYTES,
 } from "../../../src/ghidra/GhidraAnalysisSeeds.js";
 import {
   resolveGhidraExtensions,
@@ -63,6 +71,39 @@ const configured = (
   if (!result.ok) throw result.error;
   return result.value;
 };
+
+it("reports a seed extent over its resource budget without reading the payload", async () => {
+  const root = await createTestTempDirectory("rea-profile-capacity-");
+  const path = join(root, "seeds.tsv");
+  await writeFile(path, "0x1000\tcode\n");
+  await truncate(path, MAX_GHIDRA_SEED_BYTES + 1);
+  let reads = 0;
+  controls.file = (handle, opened) => {
+    if (opened !== path) return;
+    vi.spyOn(handle, "read").mockImplementation(async () => {
+      reads++;
+      throw new Error("Oversized input must not be read");
+    });
+  };
+  const resources = new ArtifactResourceScope();
+  try {
+    expect(await resolveGhidraAnalysisSeeds(path, resources)).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisResourceConstraintError",
+        resource: "file-size",
+        retryable: false,
+        reportedLimits: {
+          maximum_bytes: MAX_GHIDRA_SEED_BYTES,
+          observed_bytes: String(MAX_GHIDRA_SEED_BYTES + 1),
+        },
+      },
+    });
+    expect(reads).toBe(0);
+  } finally {
+    await resources.close();
+  }
+});
 
 it.each(
   (["seed", "extension"] as const).flatMap((kind) =>
@@ -365,7 +406,17 @@ it("joins whole provider resolution before shutdown and gates the next admission
     expect(opens).toBe(count);
     expect(provider.hasPendingOwnedResources()).toBe(true);
     release.resolve();
-    expect((await resolving).ok).toBe(true);
+    const stopped = await resolving;
+    if (stopped.ok) throw new Error("Expected owned resolution cancellation");
+    expect(stopped.error.cause).toBe(STARTUP_OWNER_CLOSED);
+    expect(stopped).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCancelledError",
+        operation: "open_binary",
+        cause: STARTUP_OWNER_CLOSED,
+      },
+    });
     expect(await closing).toEqual({ ok: true, value: null });
     expect((await next).ok).toBe(true);
     expect(provider.hasPendingOwnedResources()).toBe(false);

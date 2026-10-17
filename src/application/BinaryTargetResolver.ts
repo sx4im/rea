@@ -1,3 +1,4 @@
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
 import { constants, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import {
@@ -224,6 +225,13 @@ export const parseBinaryTarget = async (
     }
   } catch (cause: unknown) {
     if (cause instanceof AnalysisCancelledError) return err(cause);
+    const cancellation = regularFileCancellation(cause);
+    if (cancellation !== undefined)
+      return err(
+        new AnalysisCancelledError("resolve_binary_target", {
+          cause: cancellation.reason,
+        }),
+      );
     if (signal?.aborted === true && cause === signal.reason)
       return err(
         new AnalysisCancelledError("resolve_binary_target", { cause }),

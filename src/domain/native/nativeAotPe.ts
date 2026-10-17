@@ -13,7 +13,7 @@ export const NATIVE_AOT_MAX_WORK_UNITS = 64 * 1024 * 1024;
 export const NATIVE_AOT_MAX_WORKING_MEMORY_BYTES = 64 * 1024 * 1024;
 /** Version of the built-in read-only PE metadata interpretation in profiles. */
 export const NATIVE_AOT_PROFILE_CONTRACT_REVISION =
-  "rtr-9.1-x64-pe-read-only-v3";
+  "rtr-9.1-x64-pe-read-only-v5";
 
 export type NativeAotParserLimits = {
   readonly sourceBytes: number;
@@ -387,6 +387,7 @@ class PeImage {
     if (bytes.length < 0x40 || bytes.toString("latin1", 0, 2) !== "MZ")
       throw new Error("Not a PE image");
     const peOffset = this.#u32(0x3c);
+    if (peOffset < 0x40) throw new Error("PE header overlaps the DOS header");
     this.#range(peOffset, 24);
     if (bytes.toString("latin1", peOffset, peOffset + 4) !== "PE\0\0")
       throw new Error("Invalid PE signature");
@@ -399,6 +400,12 @@ class PeImage {
     const optionalSize = this.#u16(peOffset + 20);
     const optional = peOffset + 24;
     this.#range(optional, optionalSize);
+    // Mapping fields through SizeOfHeaders must belong to this header,
+    // independently of whether the following file bytes are available.
+    if (optionalSize < 64)
+      throw new Error(
+        "PE optional header is too short for image mapping fields",
+      );
     const magic = this.#u16(optional);
     if (magic !== 0x20b || this.#machine !== 0x8664)
       throw new Error("Only x64 PE32+ is supported");
@@ -407,8 +414,18 @@ class PeImage {
     this.#sizeOfHeaders = this.#u32(optional + 60);
     if (count < 1 || this.sizeOfImage === 0)
       throw new Error("Unsupported PE image extent");
+    if (this.imageBase + BigInt(this.sizeOfImage) > 1n << 64n)
+      throw new Error("PE image exceeds the 64-bit address domain");
     const sectionOffset = optional + optionalSize;
     this.#range(sectionOffset, count * 40);
+    if (
+      this.#sizeOfHeaders < sectionOffset + count * 40 ||
+      this.#sizeOfHeaders > this.#bytes.length ||
+      this.#sizeOfHeaders > this.sizeOfImage
+    )
+      throw new Error(
+        "PE declared headers do not fit the captured image layout",
+      );
     this.sections = Array.from({ length: count }, (_, index) => {
       const p = sectionOffset + index * 40;
       const name = bytes.toString("ascii", p, p + 8).replace(/\0.*$/u, "");
@@ -425,6 +442,19 @@ class PeImage {
       this.#range(section.rawOffset, section.rawSize);
       if (section.rva + virtualExtent(section) > this.sizeOfImage)
         throw new Error("PE section exceeds the declared image extent");
+    }
+    // Establish one virtual owner before any scan, read, permission query or
+    // hydration. Empty sections own no bytes; adjacent intervals remain valid.
+    const mapped = this.sections
+      .filter((section) => virtualExtent(section) > 0)
+      .sort((left, right) => left.rva - right.rva);
+    let mappedEnd = this.#sizeOfHeaders;
+    for (const section of mapped) {
+      if (section.rva < mappedEnd)
+        throw new Error(
+          "PE virtual section overlaps headers or another section",
+        );
+      mappedEnd = section.rva + virtualExtent(section);
     }
   }
 
@@ -454,8 +484,14 @@ class PeImage {
     const rva = address - this.imageBase;
     if (rva > BigInt(Number.MAX_SAFE_INTEGER)) return null;
     const relative = Number(rva);
-    if (relative < this.#sizeOfHeaders && relative <= this.#bytes.length - size)
+    if (relative < this.#sizeOfHeaders) {
+      if (
+        size > this.#sizeOfHeaders - relative ||
+        relative > this.#bytes.length - size
+      )
+        return null;
       return this.#bytes.subarray(relative, relative + size);
+    }
     for (const section of this.sections) {
       if (this.#budget !== undefined && !this.#budget.consumeWork(1))
         return null;

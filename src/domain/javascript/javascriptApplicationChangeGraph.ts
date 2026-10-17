@@ -118,6 +118,11 @@ const changedFromEdge = (
   if (
     item.match.status !== "matched" ||
     item.status === "unchanged" ||
+    // Pairing and uncertainty remain in the item; neither establishes a change.
+    (item.status === "unknown" &&
+      !item.dimensions.some(
+        (dimension) => dimension !== "location" && dimension !== "coverage",
+      )) ||
     left === null ||
     right === null ||
     left === right ||

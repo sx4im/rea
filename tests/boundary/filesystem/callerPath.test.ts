@@ -39,3 +39,14 @@ it("uses lexical resolution on Windows, where it is exact", () => {
   );
   expect(absoluteCallerPath("D:\\x\\..\\y", win32)).toBe("D:\\y");
 });
+
+it("normalizes separator spellings of absolute Windows paths (#4707)", () => {
+  const win32 = { cwd: "C:\\work", platform: "win32" } as const;
+  for (const spelling of [
+    "C:\\Users\\u\\h.exe",
+    "C:/Users/u/h.exe",
+    "C:\\\\Users\\\\u\\\\h.exe",
+    "C://Users//u//h.exe",
+  ])
+    expect(absoluteCallerPath(spelling, win32)).toBe("C:\\Users\\u\\h.exe");
+});

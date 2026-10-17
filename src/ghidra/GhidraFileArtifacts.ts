@@ -1,17 +1,27 @@
-import { lstat, open } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import {
   assertArtifactReadActive,
   artifactFileCancellationCause,
   artifactFilePrimaryFailure,
+  mapArtifactFileFailure,
   bindArtifactFileCleanup,
   withArtifactFileHandle,
   withArtifactRegularFile,
 } from "../artifacts/ArtifactFileOperation.js";
-import { sameRegularFileState } from "../filesystem/RegularFile.js";
+import {
+  readStableFileBytes,
+  RegularFileCapacityError,
+} from "../filesystem/readStableFileBytes.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
-import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisCancelledError,
+  AnalysisAccessDeniedError,
+  AnalysisArtifactChangedError,
+  AnalysisResourceConstraintError,
+} from "../domain/analysisErrorCore.js";
+import { RegularFileChangedError } from "../filesystem/RegularFile.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
@@ -26,34 +36,10 @@ export const readGhidraProfileArtifact = <Value>(
   interpret: (bytes: Buffer) => Value,
 ): Promise<Value> =>
   withArtifactRegularFile(path, resources, signal, async (file) => {
-    const before = await file.stat({ bigint: true });
-    if (before.size > BigInt(maximumBytes))
-      throw new Error(
-        `Ghidra profile artifact must be at most ${String(maximumBytes)} bytes: ${path}`,
-      );
-    const bytes = Buffer.alloc(Number(before.size));
-    let offset = 0;
-    while (offset < bytes.length) {
-      assertArtifactReadActive(signal);
-      const read = await file.read(
-        bytes,
-        offset,
-        bytes.length - offset,
-        offset,
-      );
-      if (read.bytesRead === 0)
-        throw new Error(`Incomplete Ghidra profile artifact read: ${path}`);
-      offset += read.bytesRead;
-    }
-    assertArtifactReadActive(signal);
-    const extra = Buffer.alloc(1);
-    if (
-      (await file.read(extra, 0, 1, offset)).bytesRead !== 0 ||
-      !sameRegularFileState(before, await file.stat({ bigint: true })) ||
-      !sameRegularFileState(before, await lstat(path, { bigint: true }))
-    )
-      throw new Error(`Ghidra profile artifact changed during read: ${path}`);
-    assertArtifactReadActive(signal);
+    const bytes = await readStableFileBytes(file, path, maximumBytes, {
+      symlinks: "reject",
+      ...(signal === undefined ? {} : { signal }),
+    });
     return interpret(bytes);
   });
 
@@ -72,11 +58,47 @@ export const writeGhidraProfileArtifact = async (
 };
 
 /** Preserve physical failure, exact cancellation, and all retained file leases. */
-export const ghidraProfileArtifactError = (
+export const ghidraFileFailure = (
   cause: unknown,
   operation: string,
   diagnostics: Readonly<Record<string, JsonValue>> = {},
 ): AnalysisError => {
+  cause = mapArtifactFileFailure(cause, (primary) => {
+    if (primary instanceof RegularFileCapacityError)
+      return new AnalysisResourceConstraintError(
+        operation,
+        "file-size",
+        primary.message,
+        {
+          maximum_bytes: primary.maximumBytes,
+          observed_bytes: primary.observedBytes.toString(),
+        },
+        { cause: primary, diagnostics, retryable: false },
+      );
+    if (primary instanceof RegularFileChangedError)
+      return new AnalysisArtifactChangedError(
+        operation,
+        primary.path,
+        primary.message,
+        { cause: primary, diagnostics },
+      );
+    if (
+      primary instanceof Error &&
+      "code" in primary &&
+      (primary.code === "EACCES" || primary.code === "EPERM")
+    ) {
+      const path =
+        "path" in primary && typeof primary.path === "string"
+          ? primary.path
+          : diagnostics.path;
+      if (typeof path === "string")
+        return new AnalysisAccessDeniedError(operation, path, primary.code, {
+          cause: primary,
+          diagnostics,
+        });
+    }
+    return primary;
+  });
   if (cause instanceof AnalysisError) return cause;
   const primary = artifactFilePrimaryFailure(cause);
   const reason = primary instanceof Error ? primary.message : String(primary);
@@ -112,7 +134,20 @@ export const ghidraProfileArtifactError = (
       : new ProviderAdapterError("ghidra", operation, {
           cause,
           cleanup,
-          diagnostics: { ...diagnostics, reason },
+          diagnostics: {
+            ...diagnostics,
+            ...(primary instanceof Error &&
+            "code" in primary &&
+            typeof primary.code === "string"
+              ? { system_code: primary.code }
+              : {}),
+            ...(primary instanceof Error &&
+            "syscall" in primary &&
+            typeof primary.syscall === "string"
+              ? { syscall: primary.syscall }
+              : {}),
+            reason,
+          },
           userMessage: reason,
         });
   bindArtifactFileCleanup(cause, error);

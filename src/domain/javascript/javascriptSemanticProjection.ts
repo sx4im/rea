@@ -725,10 +725,23 @@ const isNonReferenceKey = (node: t.Identifier, parent: t.Node): boolean =>
     parent.key === node &&
     !parent.computed &&
     !(t.isObjectProperty(parent) && parent.shorthand)) ||
+  isNoncomputedClassMemberKey(node, parent) ||
+  t.isPrivateName(parent) ||
   (t.isExportSpecifier(parent) && parent.exported === node) ||
   t.isLabeledStatement(parent) ||
   t.isBreakStatement(parent) ||
   t.isContinueStatement(parent);
+
+/** A noncomputed class member name is a property key, never a lexical read. */
+const isNoncomputedClassMemberKey = (
+  node: t.Identifier,
+  parent: t.Node,
+): boolean =>
+  (t.isClassMethod(parent) ||
+    t.isClassProperty(parent) ||
+    t.isTSDeclareMethod(parent)) &&
+  parent.key === node &&
+  !parent.computed;
 
 const patternNames = (pattern: t.Node): string[] => {
   if (t.isTSParameterProperty(pattern)) return patternNames(pattern.parameter);

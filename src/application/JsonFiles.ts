@@ -288,7 +288,7 @@ const publishFile = async (
   const staged = resolve(stagingDirectory, "content");
   try {
     const file = await open(staged, "wx", 0o600);
-    await owner.setFile(new OwnedFileHandle(file));
+    owner.setFile(new OwnedFileHandle(file));
     let written: Result<number, unknown>;
     try {
       const bytes = await writeStagedParts(file, parts, cancellation);

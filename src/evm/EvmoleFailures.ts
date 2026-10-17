@@ -68,6 +68,7 @@ export const evmInterfaceFailure = (
       );
     if (cause.reason === "cancelled")
       return new AnalysisCancelledError("inspect_evm_interface", {
+        cause: cause.cancellation?.reason,
         ...outputOptions,
         ...cleanupOptions,
       });

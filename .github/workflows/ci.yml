@@ -357,10 +357,15 @@ jobs:
       # test:prepare caches only portable JS, skill, and catalog outputs.
       # Native package jobs still run their build and prepack checks; Turbo
       # restores matching outputs or rebuilds when their inputs differ.
+      - name: Stage current portable build task cache
+        shell: bash
+        run: |
+          npm run --silent test:prepare -- --dry=json |
+            node scripts/ci/portable-build-cache.mjs snapshot
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rea-build-cache
-          path: .turbo/cache/
+          path: .cache/ci-build-cache/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -748,6 +753,7 @@ jobs:
           tests/boundary/filesystem/webScriptManifestPaths.test.ts
           tests/boundary/process/ProcessEvidence.host.test.ts
           tests/boundary/process/packageNpmInvocation.test.ts
+          tests/boundary/process/packedBridgeVerification.test.ts
           tests/boundary/process/windowsOutputCapture.test.ts
           tests/acceptance/webModuleCli.test.ts
           tests/acceptance/webSourceLocationCli.test.ts

@@ -6,6 +6,7 @@ import {
   AnalysisOutputError,
   AnalysisUnsupportedTargetError,
   AnalysisResourceConstraintError,
+  AnalysisTimeoutError,
 } from "./analysisErrorCore.js";
 import { ArtifactOperationError } from "./artifactOperationError.js";
 import {
@@ -30,12 +31,17 @@ import { ProviderSelectionError } from "./providerSelectionError.js";
 import { ProviderAdapterError } from "./providerAdapterError.js";
 import { UnknownRegistryError } from "./unknownRegistryError.js";
 import { providerRetryAction } from "./providerOperationHealth.js";
-import type { AnalysisError, AnalysisErrorTag } from "./analysisErrorBase.js";
+import {
+  resolvedAnalysisError,
+  type AnalysisError,
+  type AnalysisErrorTag,
+} from "./analysisErrorBase.js";
 import type { AnalysisErrorProjection } from "./analysisErrorProjection.js";
 
 export const analysisErrorRemediationAction = (
   error: AnalysisError,
 ): string => {
+  error = resolvedAnalysisError(error);
   if (
     error instanceof ProviderAdapterError &&
     error.remediationAction !== undefined
@@ -70,6 +76,11 @@ export const analysisErrorRemediationAction = (
               ? "Review the reported worker file-size limits and write failure. Retry with a sufficient file-size allowance for the evidence reply; REA retains tighter inherited limits."
               : "Review the reported worker memory limits and available host memory. Retry with sufficient memory or a smaller artifact; REA retains tighter inherited limits.")
     );
+  if (
+    error instanceof AnalysisTimeoutError &&
+    error.remediationAction !== undefined
+  )
+    return error.remediationAction;
   if (error instanceof HopperTimeoutError)
     return error.operation === undefined
       ? "Review details.launcher and inspect Hopper for ongoing initial analysis or a pending loader, demo, or license dialog. For a large target, increase REA_HOPPER_STARTUP_TIMEOUT_MS in the environment that starts REA and allow at least that long in the MCP client. Resolve retained cleanup before reopening."
@@ -132,6 +143,7 @@ export const analysisErrorRemediationAction = (
 export const analysisErrorCategory = (
   error: AnalysisError,
 ): AnalysisErrorProjection["category"] => {
+  error = resolvedAnalysisError(error);
   if (error instanceof AnalysisCapabilityUnavailableError && error.retryable)
     return "unavailable";
   if (
@@ -228,6 +240,7 @@ const STATIC_ERROR_CATEGORIES: Readonly<
 };
 
 export const analysisErrorUserMessage = (error: AnalysisError): string => {
+  error = resolvedAnalysisError(error);
   if (error instanceof AnalysisSnapshotMismatchError) return error.message;
   if (error instanceof AnalysisUnsupportedTargetError) return error.message;
   if (error instanceof AnalysisResourceConstraintError) return error.reason;

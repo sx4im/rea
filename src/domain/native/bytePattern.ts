@@ -122,4 +122,31 @@ export const byteSearchResultSchema = z
         code: "custom",
         message: "Byte search coverage and continuation disagree",
       });
+    const ranges = value.searched.blocks.map((block) => ({
+      segment: block.segment,
+      start: addressCoordinate(block.start),
+      end: addressCoordinate(block.end),
+    }));
+    for (const [index, match] of value.matches.entries()) {
+      const address = addressCoordinate(match.address);
+      if (
+        address === null ||
+        !ranges.some(
+          (range) =>
+            range.segment === match.segment &&
+            range.start !== null &&
+            range.end !== null &&
+            range.start.space === address.space &&
+            range.end.space === address.space &&
+            range.start.offset <= address.offset &&
+            address.offset <= range.end.offset,
+        )
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["matches", index, "address"],
+          message:
+            "Byte match must lie within reported searched coverage in the same segment and address space",
+        });
+    }
   });

@@ -23,8 +23,14 @@ import {
 } from "../domain/analysisErrorCore.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { hashStableFile } from "../filesystem/StableFileHash.js";
-import { RegularFileCleanupFailure } from "../filesystem/OwnedRegularFile.js";
+import {
+  hashStableFile,
+  stableFileHashCause,
+} from "../filesystem/StableFileHash.js";
+import {
+  RegularFileCleanupFailure,
+  regularFileCancellation,
+} from "../filesystem/OwnedRegularFile.js";
 import type { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import type { KunaInstallation } from "./KunaInstallation.js";
 import {
@@ -350,8 +356,8 @@ export class KunaProjectCache {
             kunaExportFailure(cause, signal),
             cause,
           );
-        signal?.throwIfAborted();
-        if (!isDamaged(cause)) throw cause;
+        if (regularFileCancellation(cause) !== undefined) throw cause;
+        if (!isDamaged(stableFileHashCause(cause))) throw cause;
         await this.#discard(key);
         return undefined;
       }

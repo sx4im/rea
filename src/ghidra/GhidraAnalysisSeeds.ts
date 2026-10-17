@@ -11,8 +11,8 @@ import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.j
 import {
   readGhidraProfileArtifact,
   writeGhidraProfileArtifact,
-  ghidraProfileArtifactError,
-} from "./GhidraProfileArtifacts.js";
+  ghidraFileFailure,
+} from "./GhidraFileArtifacts.js";
 import { err, ok, type Result } from "../domain/result.js";
 
 /** Seed file format admitted by this adapter. */
@@ -180,7 +180,7 @@ export const resolveGhidraAnalysisSeeds = async (
         entries = await readSeeds(path, resources, signal);
       } catch (cause: unknown) {
         return err(
-          ghidraProfileArtifactError(cause, "resolve_analysis_profile", {
+          ghidraFileFailure(cause, "resolve_analysis_profile", {
             setting: "REA_GHIDRA_SEED_FILE",
             path: configured,
           }),
@@ -199,7 +199,7 @@ export const resolveGhidraAnalysisSeeds = async (
     })
     .catch((cause: unknown) =>
       err(
-        ghidraProfileArtifactError(cause, "resolve_analysis_profile", {
+        ghidraFileFailure(cause, "resolve_analysis_profile", {
           setting: "REA_GHIDRA_SEED_FILE",
         }),
       ),
@@ -232,7 +232,7 @@ export const snapshotGhidraAnalysisSeeds = async (
       return path;
     })
     .catch((cause: unknown) => {
-      throw ghidraProfileArtifactError(cause, "open_binary", {
+      throw ghidraFileFailure(cause, "open_binary", {
         setting: "REA_GHIDRA_SEED_FILE",
         path: commitment.path,
       });

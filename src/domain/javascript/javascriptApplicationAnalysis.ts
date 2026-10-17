@@ -63,6 +63,10 @@ const reconstructionStatisticsSchema = z.strictObject({
   text_bytes_read: countSchema,
   invalid_utf8_files: countSchema,
   parsed_javascript_files: countSchema,
+  // Old saved evidence predates this field: absence must stay unknown, not
+  // become a measured zero. The producer always writes it (required by the
+  // application-layer result type); readers treat a missing value as unknown.
+  skipped_javascript_files: countSchema.exactOptional(),
   visited_ast_nodes: countSchema,
   findings: countSchema,
   modules: countSchema,

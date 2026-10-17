@@ -1,7 +1,8 @@
 import { open, readdir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
-import { DOMParser, onWarningStopParsing } from "@xmldom/xmldom";
+import { parseXmlDocument } from "../domain/xmlDocument.js";
+import { decodeXmlPlistText } from "../domain/propertyListXmlText.js";
 
 import type { GhidraLanguageOverride } from "../config/ghidraLanguageOverride.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
@@ -80,9 +81,12 @@ export const parseGhidraLanguageDefinitions = (
   text: string,
 ): readonly GhidraLanguageDefinition[] => {
   const definitions: GhidraLanguageDefinition[] = [];
-  const document = new DOMParser({
-    onError: onWarningStopParsing,
-  }).parseFromString(text, "application/xml");
+  const parsed = parseXmlDocument(text, {
+    doctype: "allow",
+    lineEndings: "normalize",
+  });
+  if (!parsed.ok) throw parsed.error;
+  const document = parsed.value;
   const root = document.documentElement;
   if (root?.tagName !== "language_definitions")
     throw new SyntaxError("Expected Ghidra language_definitions XML root");
@@ -164,10 +168,10 @@ export const readGhidraLanguageCatalog = async (
       if (!entry.endsWith(".ldefs")) continue;
       const bytes = await readLanguageDefinitionFile(join(directory, entry));
       if (bytes === undefined) continue;
-      // XML 1.0 section 4.3.3: a leading UTF-8 BOM is an encoding signature,
-      // not document content; TextDecoder consumes it, Buffer#toString does not.
+      // The XML byte owner validates encoding and declaration before syntax
+      // parsing; a literal U+FFFD cannot diagnose invalid source bytes.
       definitions.push(
-        ...parseGhidraLanguageDefinitions(new TextDecoder().decode(bytes)),
+        ...parseGhidraLanguageDefinitions(decodeXmlPlistText(bytes)),
       );
     }
   }

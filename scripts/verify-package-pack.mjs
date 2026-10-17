@@ -66,6 +66,6 @@ export async function verifyPackagePack({ root, workspace }) {
   ) {
     throw new Error("package contained generated Python bytecode");
   }
-  await verifyPackedBridge({ workspace, tarball, packedFiles });
+  await verifyPackedBridge({ tarball, packedFiles });
   return { tarball };
 }

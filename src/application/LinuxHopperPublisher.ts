@@ -10,9 +10,16 @@ import {
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { homeDirectoryFromEnvironment } from "../config/homeDirectory.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { hashStableFile } from "../filesystem/StableFileHash.js";
+import {
+  hashStableFile,
+  StableFileHashFailure,
+} from "../filesystem/StableFileHash.js";
 import type { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
-import { RegularFileCleanupFailure } from "../filesystem/OwnedRegularFile.js";
+import {
+  RegularFileCleanupFailure,
+  RegularFileCancelled,
+  regularFileCancellation,
+} from "../filesystem/OwnedRegularFile.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import { verifyDetachedPgpSignature } from "../process/DetachedPgpSignature.js";
 import { execFileOutput } from "../process/ExecFileOutput.js";
@@ -705,8 +712,17 @@ export class LinuxHopperPublisher {
           },
         );
       }
-      if (hashFailure.outcome.kind === "failed")
-        throw hashFailure.outcome.cause;
+      if (hashFailure.outcome.kind === "failed") {
+        if (regularFileCancellation(hashFailure) !== undefined)
+          throw hashFailure.outcome.cause;
+        throw new StableFileHashFailure(path, hashFailure.outcome.cause);
+      }
+      const cancellation = regularFileCancellation(hashFailure);
+      if (cancellation !== undefined)
+        throw new RegularFileCancelled(path, hashFailure.owner, {
+          outcome: hashFailure.outcome,
+          reason: cancellation.reason,
+        });
       return hashFailure.outcome.value;
     }
   }
@@ -1084,21 +1100,26 @@ const releaseFailure = (
   signal: AbortSignal | undefined,
   fallback: HopperReleaseError["reason"],
 ): HopperReleaseError => {
-  if (cause instanceof HopperReleaseError && cause.reason === "cleanup_failed")
-    return cause;
+  if (cause instanceof HopperReleaseError) return cause;
   if (cause instanceof ArtifactReaderFailure && cause.cleanup !== undefined)
     return new HopperReleaseError(
       "cleanup_failed",
       "Hopper publisher cleanup remains incomplete.",
       { cause },
     );
-  if (signal?.aborted === true)
+  const cancellation = regularFileCancellation(cause);
+  if (cancellation !== undefined)
+    return new HopperReleaseError(
+      "cancelled",
+      "Hopper publisher verification was cancelled.",
+      { cause: cancellation.reason },
+    );
+  if (!(cause instanceof StableFileHashFailure) && signal?.aborted === true)
     return new HopperReleaseError(
       "cancelled",
       "Hopper publisher verification was cancelled.",
       { cause },
     );
-  if (cause instanceof HopperReleaseError) return cause;
   return new HopperReleaseError(
     fallback,
     "Hopper publisher verification could not complete.",

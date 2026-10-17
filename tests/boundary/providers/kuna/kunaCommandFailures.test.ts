@@ -25,7 +25,7 @@ it("reports output beyond REA's fixed buffer as a deterministic memory bound", a
       installation: installed.value,
       operation: "list_procedures",
       arguments: (input) => ["functions", input, "--json"],
-      timeoutMs: 10_000,
+      deadline: { setting: "REA_KUNA_TIMEOUT_MS", ms: 10_000 },
       outputBytes: 100,
       signal: controller.signal,
     });

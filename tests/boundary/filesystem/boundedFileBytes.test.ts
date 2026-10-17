@@ -23,6 +23,40 @@ describe("bounded file byte reads", () => {
     },
   );
 
+  it.each([undefined, 5])(
+    "preserves raw reasons or caller-owned cancellation with expected size %s",
+    async (expectedSize) => {
+      const root = await createTestTempDirectory("rea-bounded-cancel-");
+      const path = join(root, "input");
+      await writeFile(path, "hello");
+      const handle = await open(path, "r");
+      try {
+        for (const reason of [null, "stopped", new Error("stopped")]) {
+          const controller = new AbortController();
+          controller.abort(reason);
+          await expect(
+            readBoundedFileBytes(handle, 5, controller.signal, expectedSize),
+          ).rejects.toBe(reason);
+          const typed = new Error("typed cancellation", { cause: reason });
+          await expect(
+            readBoundedFileBytes(
+              handle,
+              5,
+              controller.signal,
+              expectedSize,
+              (observed) => {
+                expect(observed).toBe(reason);
+                return typed;
+              },
+            ),
+          ).rejects.toBe(typed);
+        }
+      } finally {
+        await handle.close();
+      }
+    },
+  );
+
   it("stops after one overflow byte when a file grows beyond its admitted size", async () => {
     const root = await createTestTempDirectory("rea-growing-bytes-");
     const path = join(root, "input");

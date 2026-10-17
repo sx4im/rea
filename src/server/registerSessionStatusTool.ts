@@ -3,7 +3,7 @@ import type { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 import type { BinarySessionPort } from "../application/binary/BinarySessionPort.js";
 import type { ProviderAvailability } from "../application/AnalysisProvider.js";
 import type { JebAnalysisAvailability } from "../application/jeb/JebAnalysisPort.js";
-import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
+import { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
   buildCapabilityInventory,
   compactToolAvailability,
@@ -13,7 +13,7 @@ import type {
   ClientFeatureAvailability,
   ToolAvailability,
 } from "../contracts/toolOutputSchemaPrimitives.js";
-import { jsonObjectSchema } from "../domain/jsonValue.js";
+import { jsonObjectSchema, type JsonValue } from "../domain/jsonValue.js";
 import { createServerIdentity } from "../serverIdentity.js";
 import { mcpClientMetadata } from "./mcpClientMetadata.js";
 import type { AvailabilityPolicy } from "../application/CapabilityInventory.js";
@@ -73,6 +73,7 @@ export const registerSessionStatusTool = (
       let adbAvailability: ProviderAvailability | undefined;
       let apktoolAvailability: ProviderAvailability | undefined;
       let jebAvailability: JebAnalysisAvailability | undefined;
+      let status: JsonValue;
       try {
         const [android, adb, apktool, jeb] = await Promise.all([
           androidAnalysisAvailability(context.mcpReq.signal),
@@ -84,14 +85,11 @@ export const registerSessionStatusTool = (
         adbAvailability = adb;
         apktoolAvailability = apktool;
         jebAvailability = jeb;
+        status = await session.status({ signal: context.mcpReq.signal });
       } catch (cause) {
-        if (!context.mcpReq.signal.aborted) throw cause;
-        return server.delivery.toCallToolResult(
-          err(new AnalysisCancelledError("binary_session")),
-          contract,
-        );
+        if (!(cause instanceof AnalysisError)) throw cause;
+        return server.delivery.toCallToolResult(err(cause), contract);
       }
-      const status = session.status();
       const statusObject = jsonObjectSchema.parse(status);
       const toolAvailability = buildCapabilityInventory(
         status,

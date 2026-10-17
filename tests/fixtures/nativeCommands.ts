@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { BinaryTarget } from "../../src/domain/binaryTargetTypes.js";
+import type { InspectSignature } from "../../src/domain/native/nativeInspection.js";
 import { ok } from "../../src/domain/result.js";
 import type {
   NativeCommandCapture,
@@ -141,3 +142,20 @@ export const withOtoolMachHeader = (output: string): string => {
     output,
   ].join("\n");
 };
+
+/** Parsed signature facts for lifecycle controls that do not invoke native tools. */
+export const signatureInspectionFixture = (): InspectSignature => ({
+  signed: true,
+  identifier: "rea.lifecycle-fixture",
+  team_identifier: null,
+  format: "Mach-O thin (arm64)",
+  cdhashes: ["0123456789abcdef"],
+  hash_algorithms: ["sha256"],
+  authorities: [],
+  designated_requirement: null,
+  entitlements: null,
+  timestamp: null,
+  hardened_runtime: null,
+  provenance: [],
+  limitations: ["Controlled parsed facts; no native signing tool invoked."],
+});

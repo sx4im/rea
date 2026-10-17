@@ -291,6 +291,74 @@ describe("JavaScript semantic analysis: class expression lexical names", () => {
   });
 });
 
+describe("JavaScript semantic analysis: class member keys", () => {
+  it("does not read an outer binding through noncomputed class member names", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      const marker = "seed";
+      class Holder {
+        marker() {}
+        static marker() {}
+        get marker() { return 1; }
+        set marker(value) {}
+        marker = 1;
+        static marker = 2;
+        #marker = 3;
+        #read() { return this.#marker; }
+      }
+    `);
+    expect(ir.references.filter(({ name }) => name === "marker")).toEqual([]);
+  });
+
+  it("does not read an outer binding through TypeScript class member names", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      const marker = "seed";
+      abstract class Holder {
+        declare marker: string;
+        abstract marker(): void;
+        abstract [marker](): void;
+      }
+      class Overloads {
+        marker(): void;
+        marker(value?: number) {}
+      }
+    `);
+    // Only the computed abstract key evaluates the outer binding.
+    expect(
+      ir.references
+        .filter(({ name }) => name === "marker")
+        .map(({ role, location }) => `${role}@${location.start.line}`),
+    ).toEqual(["read@6"]);
+  });
+
+  it("does not capture an outer binding through a noncomputed method name", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      function outer() {
+        const marker = 1;
+        class Holder { marker() { return 2; } }
+        return Holder;
+      }
+    `);
+    expect(ir.closureCaptures).toEqual([]);
+  });
+
+  it("keeps reads from computed class keys and field initializers", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      const marker = "seed";
+      class Holder {
+        [marker]() {}
+        field = marker;
+      }
+    `);
+    const reads = ir.references.filter(
+      ({ name, role }) => name === "marker" && role === "read",
+    );
+    expect(reads.map(({ resolution }) => resolution)).toEqual([
+      "resolved",
+      "resolved",
+    ]);
+  });
+});
+
 describe("JavaScript semantic analysis: structure 2", () => {
   it("retains ESM, re-export, require, and CommonJS export relationships", () => {
     const ir = analyzeJavaScriptSemantics(`

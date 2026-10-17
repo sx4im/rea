@@ -60,10 +60,10 @@ export const firmwareFailure = (
               deadline,
               treeCleanupLease,
             )
-          : cause.completionCancellation !== undefined
+          : cause.fileCleanupFailure.completionCancellation !== undefined
             ? firmwareCancellation(
                 operation,
-                cause.completionCancellation.reason,
+                cause.fileCleanupFailure.completionCancellation.reason,
                 deadline,
               )
             : undefined;

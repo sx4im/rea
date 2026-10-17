@@ -342,3 +342,263 @@ it("retries pending cleanup before acquiring a publisher temporary root", async 
     await publisher.close();
   }
 });
+
+it.each([
+  { stage: "close", reason: null },
+  { stage: "close", reason: "caller stopped" },
+  { stage: "close", reason: new Error("caller stopped") },
+  { stage: "retention", reason: "after the failed close" },
+] as const)(
+  "records completion cancellation at $stage before owner handoff",
+  async ({ stage, reason }) => {
+    const root = await createTestTempDirectory("rea-hash-close-provenance-");
+    const path = join(root, "input.bin");
+    await writeFile(path, "owned bytes");
+    const controller = new AbortController();
+    const nativeClose = OwnedFileHandle.prototype.close;
+    const close = vi
+      .spyOn(OwnedFileHandle.prototype, "close")
+      .mockImplementationOnce(async () => {
+        if (stage === "close") controller.abort(reason);
+        throw new Error("injected failed close");
+      });
+    let retained: OwnedFileHandle | undefined;
+    try {
+      const failure: unknown = await hashStableFile(path, {
+        signal: controller.signal,
+        retainFailedClose: (owner) => {
+          retained = owner;
+          if (stage === "retention") controller.abort(reason);
+        },
+      }).catch((cause: unknown) => cause);
+      expect(failure).toBeInstanceOf(RegularFileCleanupFailure);
+      expect(failure).toMatchObject({
+        outcome: { kind: "completed", value: { bytes: 11 } },
+      });
+      if (stage === "close") {
+        expect(failure).toMatchObject({ completionCancellation: { reason } });
+        expect(
+          Reflect.get(failure as object, "completionCancellation").reason,
+        ).toBe(reason);
+      } else
+        expect(failure).not.toHaveProperty(
+          "completionCancellation",
+          expect.anything(),
+        );
+    } finally {
+      close.mockRestore();
+      if (retained !== undefined) await nativeClose.call(retained);
+    }
+  },
+);
+
+it("tags a physical hash failure without inferring cancellation from a later signal", async () => {
+  const root = await createTestTempDirectory("rea-hash-physical-provenance-");
+  const path = join(root, "input.bin");
+  await writeFile(path, "owned bytes");
+  const controller = new AbortController();
+  const primary = Object.assign(new Error("injected digest read failure"), {
+    code: "EIO",
+  });
+  const nativeOpen = regularFile.openRegularFile;
+  const open = vi
+    .spyOn(regularFile, "openRegularFile")
+    .mockImplementation(async (selected, options) => {
+      const handle = await nativeOpen(selected, options);
+      vi.spyOn(handle, "read").mockRejectedValueOnce(primary);
+      return handle;
+    });
+  const nativeClose = OwnedFileHandle.prototype.close;
+  const close = vi
+    .spyOn(OwnedFileHandle.prototype, "close")
+    .mockImplementationOnce(async function (this: OwnedFileHandle) {
+      await nativeClose.call(this);
+      controller.abort(primary);
+    });
+  try {
+    const failure: unknown = await hashStableFile(path, {
+      signal: controller.signal,
+      retainFailedClose: () => {
+        throw new Error("Close succeeded");
+      },
+    }).catch((cause: unknown) => cause);
+    expect(failure).toMatchObject({
+      _tag: "StableFileHashFailure",
+      cause: primary,
+    });
+    if (!(failure instanceof Error))
+      throw new Error("Expected producer-owned physical failure");
+    expect(failure.cause).toBe(primary);
+  } finally {
+    open.mockRestore();
+    close.mockRestore();
+  }
+});
+
+it.each([false, true])(
+  "preserves premature EOF with same-read cancellation and failed close=%s",
+  async (failClose) => {
+    const root = await createTestTempDirectory("rea-hash-eof-cancel-");
+    const path = join(root, "input.bin");
+    await writeFile(path, "admitted extent");
+    const controller = new AbortController();
+    const nativeOpen = regularFile.openRegularFile;
+    let retained: OwnedFileHandle | undefined;
+    const open = vi
+      .spyOn(regularFile, "openRegularFile")
+      .mockImplementation(async (selected, options) => {
+        const handle = await nativeOpen(selected, options);
+        vi.spyOn(handle, "read").mockImplementationOnce(async () => {
+          controller.abort("cancelled at EOF");
+          return { bytesRead: 0, buffer: Buffer.alloc(0) };
+        });
+        return handle;
+      });
+    const nativeClose = OwnedFileHandle.prototype.close;
+    const close = vi.spyOn(OwnedFileHandle.prototype, "close");
+    if (failClose) close.mockRejectedValueOnce(new Error("close unavailable"));
+    try {
+      const failure: unknown = await hashStableFile(path, {
+        signal: controller.signal,
+        retainFailedClose: (owner) => {
+          retained = owner;
+        },
+      }).catch((cause: unknown) => cause);
+      const physical =
+        failure instanceof RegularFileCleanupFailure
+          ? failure.outcome.kind === "failed"
+            ? failure.outcome.cause
+            : undefined
+          : failure instanceof Error
+            ? failure.cause
+            : undefined;
+      expect(physical).toBeInstanceOf(regularFile.RegularFileChangedError);
+      if (failClose) {
+        expect(failure).toBeInstanceOf(RegularFileCleanupFailure);
+        expect(retained?.handle.fd).toBeGreaterThanOrEqual(0);
+      } else expect(failure).toMatchObject({ _tag: "StableFileHashFailure" });
+    } finally {
+      open.mockRestore();
+      close.mockRestore();
+      if (retained !== undefined) await nativeClose.call(retained);
+    }
+  },
+);
+
+it.each(
+  [null, "caller stopped", new Error("caller stopped")].flatMap((reason) =>
+    [false, true].map((failClose) => ({ reason, failClose })),
+  ),
+)(
+  "retains the exact read checkpoint reason with failed close=$failClose ($reason)",
+  async ({ reason, failClose }) => {
+    const root = await createTestTempDirectory("rea-hash-read-checkpoint-");
+    const path = join(root, "input.bin");
+    await writeFile(path, "admitted bytes");
+    const controller = new AbortController();
+    const nativeOpen = regularFile.openRegularFile;
+    let retained: OwnedFileHandle | undefined;
+    let handleSeen: Awaited<ReturnType<typeof nativeOpen>> | undefined;
+    const open = vi
+      .spyOn(regularFile, "openRegularFile")
+      .mockImplementation(async (selected, options) => {
+        const handle = await nativeOpen(selected, options);
+        handleSeen = handle;
+        const read = handle.read.bind(handle);
+        vi.spyOn(handle, "read").mockImplementationOnce(async (...args) => {
+          const result = await read(...args);
+          controller.abort(reason);
+          return result;
+        });
+        return handle;
+      });
+    const nativeClose = OwnedFileHandle.prototype.close;
+    const close = vi.spyOn(OwnedFileHandle.prototype, "close");
+    if (failClose) close.mockRejectedValueOnce(new Error("close unavailable"));
+    try {
+      const failure: unknown = await hashStableFile(path, {
+        signal: controller.signal,
+        retainFailedClose: (owner) => {
+          retained = owner;
+        },
+      }).catch((cause: unknown) => cause);
+      const primary =
+        failure instanceof RegularFileCleanupFailure &&
+        failure.outcome.kind === "failed"
+          ? failure.outcome.cause
+          : failure;
+      expect(primary).toBeInstanceOf(regularFile.RegularFileOperationCancelled);
+      expect(
+        (primary as regularFile.RegularFileOperationCancelled).reason,
+      ).toBe(reason);
+      expect(handleSeen?.fd).toBe(failClose ? retained?.handle.fd : -1);
+    } finally {
+      open.mockRestore();
+      close.mockRestore();
+      if (retained !== undefined) await nativeClose.call(retained);
+    }
+  },
+);
+
+it.each(["physical", "completed"] as const)(
+  "preserves the publisher's %s hash outcome after cancellation and a successful close retry",
+  async (outcome) => {
+    const root = await createTestTempDirectory(
+      "rea-publisher-hash-retry-cancel-",
+    );
+    const path = join(root, "launcher");
+    await writeFile(path, "launcher bytes");
+    const controller = new AbortController();
+    const primary = new Error("injected publisher read failure");
+    const reason = null;
+    const nativeOpen = regularFile.openRegularFile;
+    const open = vi
+      .spyOn(regularFile, "openRegularFile")
+      .mockImplementation(async (selected, options) => {
+        const handle = await nativeOpen(selected, options);
+        if (outcome === "physical")
+          vi.spyOn(handle, "read").mockRejectedValueOnce(primary);
+        return handle;
+      });
+    const nativeClose = OwnedFileHandle.prototype.close;
+    let ownerSeen: OwnedFileHandle | undefined;
+    let attempts = 0;
+    const close = vi
+      .spyOn(OwnedFileHandle.prototype, "close")
+      .mockImplementation(async function (this: OwnedFileHandle) {
+        ownerSeen = this;
+        attempts++;
+        if (attempts === 1) {
+          controller.abort(reason);
+          throw new Error("first close unavailable");
+        }
+        await nativeClose.call(this);
+      });
+    const publisher = new LinuxHopperPublisher(
+      { XDG_CACHE_HOME: join(root, "cache") },
+      async () => undefined,
+    );
+    try {
+      const result = await publisher.inspectLauncher(path, controller.signal);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("Injected hash outcome passed");
+      expect(result.error.reason).toBe(
+        outcome === "physical" ? "verification_unavailable" : "cancelled",
+      );
+      if (outcome === "physical")
+        expect(result.error.cause).toMatchObject({
+          _tag: "StableFileHashFailure",
+          cause: primary,
+        });
+      else expect(result.error.cause).toBe(reason);
+      expect(attempts).toBe(2);
+      expect(ownerSeen?.handle.fd).toBe(-1);
+    } finally {
+      open.mockRestore();
+      close.mockRestore();
+      await publisher.close();
+      if (ownerSeen !== undefined && ownerSeen.handle.fd >= 0)
+        await nativeClose.call(ownerSeen);
+    }
+  },
+);

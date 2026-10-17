@@ -1027,7 +1027,9 @@ describe.skipIf(process.platform === "win32")(
           expect(result.error._tag).toBe("AnalysisCapabilityUnavailableError");
           expect(result.error.message).toContain(readFailure.message);
           expect(result.error.cleanupIncomplete).toBe(true);
-          expect(binary.status()).toMatchObject({ cleanup_pending: true });
+          expect(await binary.status()).toMatchObject({
+            cleanup_pending: true,
+          });
           expect(createClient).not.toHaveBeenCalled();
           const failedClose = await binary.close();
           expect(failedClose.ok).toBe(false);
@@ -1039,7 +1041,9 @@ describe.skipIf(process.platform === "win32")(
           expect(result.error.cleanupIncomplete).toBe(false);
           if (failedClose.ok) throw new Error("Close unexpectedly succeeded");
           expect(failedClose.error.cleanupIncomplete).toBe(false);
-          expect(binary.status()).toMatchObject({ cleanup_pending: false });
+          expect(await binary.status()).toMatchObject({
+            cleanup_pending: false,
+          });
         } finally {
           allowClose = true;
           await binary.close();

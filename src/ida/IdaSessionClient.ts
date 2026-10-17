@@ -12,6 +12,8 @@ import {
   AnalysisProtocolError,
   AnalysisOutputError,
   AnalysisInputError,
+  AnalysisTimeoutError,
+  AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
@@ -291,7 +293,7 @@ export class IdaSessionClient implements AnalysisClient {
       parameters,
     };
     try {
-      if (!readyOnly) await this.#start();
+      if (!readyOnly) await this.#start(operation);
       const before = await this.#observe(options);
       failureContext.metadataBefore = before;
       if (wasCancelled(options)) throw new AnalysisCancelledError(operation);
@@ -385,7 +387,7 @@ export class IdaSessionClient implements AnalysisClient {
     context: IdaOperationFailureContext,
   ) {
     let failure: AnalysisError;
-    if (wasCancelled(options))
+    if (wasCancelled(options)) {
       failure = new AnalysisCancelledError(operation, {
         cause,
         ...(cause instanceof AnalysisError
@@ -404,7 +406,11 @@ export class IdaSessionClient implements AnalysisClient {
             }
           : {}),
       });
-    else if (
+      if (cause instanceof AnalysisError)
+        failure
+          .bindCleanupDependencies([cause])
+          .bindCleanupResourceOwner(cause);
+    } else if (
       cause instanceof ProviderAdapterError &&
       cause.operation === "transport"
     )
@@ -419,13 +425,6 @@ export class IdaSessionClient implements AnalysisClient {
             "Check the configured upstream MCP registration and selected target; see docs/ida-provider.md.",
         },
       });
-    else if (
-      cause instanceof AnalysisError &&
-      (cause.partialObservation !== undefined ||
-        cause.cleanupIncomplete ||
-        cause.capturedOutput !== undefined)
-    )
-      failure = cause;
     else if (cause instanceof AnalysisError) failure = cause;
     else if (cause instanceof z.ZodError)
       failure = new AnalysisOutputError(
@@ -506,9 +505,62 @@ export class IdaSessionClient implements AnalysisClient {
     return err(failure);
   }
 
-  #start(): Promise<void> {
+  async #start(operation: string): Promise<void> {
     this.#startup ??= this.#initialize();
-    return this.#startup;
+    try {
+      await this.#startup;
+    } catch (cause: unknown) {
+      if (
+        !(cause instanceof AnalysisTimeoutError) &&
+        !(cause instanceof AnalysisResourceConstraintError) &&
+        !(cause instanceof ProviderAdapterError)
+      )
+        throw cause;
+      // Transport adapters already receive caller attribution in #failure.
+      if (
+        cause instanceof ProviderAdapterError &&
+        cause.operation === "transport"
+      )
+        throw cause;
+      const options = {
+        cause,
+        capturedOutput: cause.capturedOutput,
+        partialObservation: cause.partialObservation,
+        cleanup: cause.cleanup,
+        ...(cause.userMessage === undefined
+          ? {}
+          : { userMessage: cause.userMessage }),
+        ...(cause.remediationAction === undefined
+          ? {}
+          : { remediationAction: cause.remediationAction }),
+        diagnostics: {
+          ...cause.diagnostics,
+          startup_operation: cause.operation,
+        },
+      };
+      // Startup is shared, but each accepted operation owns its attribution.
+      // Keep the original cached failure unchanged for later callers.
+      const failure =
+        cause instanceof AnalysisTimeoutError
+          ? new AnalysisTimeoutError(operation, cause.timeoutMs, options)
+          : cause instanceof AnalysisResourceConstraintError
+            ? new AnalysisResourceConstraintError(
+                operation,
+                cause.resource,
+                cause.reason,
+                cause.reportedLimits,
+                {
+                  ...options,
+                  ...(cause.retryable === undefined
+                    ? {}
+                    : { retryable: cause.retryable }),
+                },
+              )
+            : new ProviderAdapterError(cause.providerId, operation, options);
+      throw failure
+        .bindCleanupDependencies([cause])
+        .bindCleanupResourceOwner(cause);
+    }
   }
 
   async #initialize(): Promise<void> {

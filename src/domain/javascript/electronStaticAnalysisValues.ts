@@ -54,27 +54,6 @@ export const boundedExpression = (
   return expression === "" ? `[${node.type}]` : expression;
 };
 
-/** Find the effective explicit property, preserving unresolved overrides. */
-export const objectProperty = (
-  object: t.Node | undefined,
-  name: string,
-):
-  | { readonly status: "missing" | "dynamic" }
-  | { readonly status: "explicit"; readonly property: t.ObjectProperty } => {
-  if (object === undefined) return { status: "missing" };
-  if (!t.isObjectExpression(object)) return { status: "dynamic" };
-  for (const property of object.properties.toReversed()) {
-    if (t.isSpreadElement(property)) return { status: "dynamic" };
-    const key = semanticStaticPropertyKey(property.key, property.computed);
-    if (key === null) return { status: "dynamic" };
-    if (key !== name) continue;
-    return t.isObjectProperty(property)
-      ? { status: "explicit", property }
-      : { status: "dynamic" };
-  }
-  return { status: "missing" };
-};
-
 type PresentHandlerKind =
   | "inline-function"
   | "identifier"

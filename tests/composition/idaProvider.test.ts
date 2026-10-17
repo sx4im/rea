@@ -16,6 +16,12 @@ import { createEvidenceBundle } from "../../src/domain/evidenceBundle.js";
 import { createAnalysisExecution } from "../../src/application/AnalysisProvider.js";
 import { EnhancedTools } from "../../src/application/EnhancedTools.js";
 import { IDA_PROVIDER_IDENTITY } from "../../src/ida/IdaProviderCapabilities.js";
+import { parseBinaryTarget } from "../../src/application/BinaryTargetResolver.js";
+import { fat } from "../../src/domain/binaryTarget.fixture.js";
+import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
+import { BinarySession } from "../../src/application/binary/BinarySession.js";
+import { SessionProviderRouter } from "../../src/application/binary/SessionProviderRouter.js";
+import { AnalysisProviderRegistry } from "../../src/application/binary/AnalysisProviderRegistry.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -182,6 +188,85 @@ describe("IDA provider composition", () => {
     expect(producer.connects).toBe(1);
     expect((await session.close()).ok).toBe(true);
     expect(producer.closes).toBe(1);
+  });
+});
+
+describe("IDA universal Mach-O target identity", () => {
+  const openUniversal = async (registration: Record<string, unknown>) => {
+    const root = await createTestTempDirectory("rea-ida-universal-");
+    roots.push(root);
+    const input = join(root, "universal");
+    // x86_64 and arm64 slices share one whole-file digest.
+    await writeFile(input, fat([0x01000007, 0x0100000c]));
+    const resolved = await parseBinaryTarget(input);
+    if (!resolved.ok) throw resolved.error;
+    const path = join(root, "registration.json");
+    await writeFile(
+      path,
+      JSON.stringify({ ...registration, workspaceRoot: root }),
+    );
+    const config = parseConfig({ REA_IDA_MCP_CONFIG: path });
+    if (!config.ok) throw config.error;
+    const producer = new RecordingIdaMcp(
+      resolved.value,
+      registration.mode === "headless" ? "headless" : "attached",
+    );
+    // The production registry consults IDA's own target admission.
+    const session = new BinarySession(
+      SessionProviderRouter.selectable(
+        new AnalysisProviderRegistry([
+          new IdaProvider(config.value, {}, () => producer),
+        ]),
+        [],
+      ),
+    );
+    return {
+      producer,
+      session,
+      opened: await session.open(input, { providerId: "ida" }),
+    };
+  };
+
+  it.each([
+    { profile: "legacy attached", registration: { command: "fixture" } },
+    {
+      profile: "native attached",
+      registration: {
+        url: "http://127.0.0.1:13337/mcp",
+        mode: "attached",
+        protocol: "native",
+      },
+    },
+  ])(
+    "refuses $profile analysis whose recorded whole-file digest cannot identify the loaded slice",
+    async ({ registration }) => {
+      const { producer, session, opened } = await openUniversal(registration);
+      expect(opened).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "ProviderSelectionError",
+          reason: "target_unsupported",
+          rejections: [
+            {
+              providerId: "ida",
+              code: "target_format_unsupported",
+              reason: expect.stringContaining("lipo -thin"),
+            },
+          ],
+        },
+      });
+      expect(producer.connects).toBe(0);
+      expect((await session.close()).ok).toBe(true);
+    },
+  );
+
+  it("keeps admitting headless analysis, which thins the selected slice", async () => {
+    const { session, opened } = await openUniversal({
+      command: "fixture",
+      mode: "headless",
+    });
+    expect(opened.ok).toBe(true);
+    expect((await session.close()).ok).toBe(true);
   });
 });
 

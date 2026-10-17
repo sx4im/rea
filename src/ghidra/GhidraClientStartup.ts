@@ -2,9 +2,10 @@ import type { JsonValue } from "../domain/jsonValue.js";
 import { err, type Result } from "../domain/result.js";
 import type { ProviderStartupDeadline } from "../process/ProviderDeadline.js";
 import type { GhidraRequestOptions } from "./GhidraClientTypes.js";
-import type {
-  GhidraSessionError,
-  GhidraSessionFailureFactory,
+import {
+  GHIDRA_STARTUP_DEADLINE_ELAPSED,
+  type GhidraSessionError,
+  type GhidraSessionFailureFactory,
 } from "./GhidraSessionError.js";
 import type { GhidraSessionInfo } from "./GhidraSessionValues.js";
 
@@ -66,6 +67,6 @@ const interruptionFailure = (
         options.deadline.signal.reason,
         { cancellation: { reason: options.deadline.signal.reason } },
       )
-    : options.failure("timeout", "Ghidra startup deadline elapsed", undefined, {
+    : options.failure("timeout", GHIDRA_STARTUP_DEADLINE_ELAPSED, undefined, {
         timeoutMs: options.startupTimeoutMs,
       });

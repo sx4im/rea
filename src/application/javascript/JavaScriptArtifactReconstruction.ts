@@ -20,7 +20,10 @@ import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySn
 import type { ArtifactInventoryPartialObservation } from "../../domain/artifactPartialObservation.js";
 import type { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
 import { analyzeAndAdoptJavaScriptArtifactFiles } from "./JavaScriptArtifactAnalysis.js";
-import { javascriptArtifactAnalysisScopes } from "./JavaScriptArtifactAnalysisTypes.js";
+import {
+  isSkippedJavaScriptAnalysis,
+  javascriptArtifactAnalysisScopes,
+} from "./JavaScriptArtifactAnalysisTypes.js";
 import { createJavaScriptSourceAnalysis } from "../../artifacts/javascript/JavaScriptSourceAnalysis.js";
 import { JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS } from "../../domain/javascript/javascriptAnalysisResourceControls.js";
 import { createOwnedJavaScriptApplicationEvidenceCooperatively } from "./JavaScriptApplicationEvidence.js";
@@ -57,6 +60,7 @@ export interface JavaScriptArtifactReconstructionResult {
     readonly text_bytes_read: number;
     readonly invalid_utf8_files: number;
     readonly parsed_javascript_files: number;
+    readonly skipped_javascript_files: number;
     readonly visited_ast_nodes: number;
     readonly findings: number;
     readonly modules: number;
@@ -274,6 +278,9 @@ export const reconstructJavaScriptArtifact = async (
           invalid_utf8_files: files.invalid_utf8_files,
           parsed_javascript_files: analysis.files.filter(
             ({ javascript }) => javascript !== null,
+          ).length,
+          skipped_javascript_files: analysis.files.filter(
+            isSkippedJavaScriptAnalysis,
           ).length,
           visited_ast_nodes: analysis.visited_ast_nodes,
           findings: analysis.findings,

@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
+  appendFile,
+  open,
   mkdir,
   rm,
   writeFile,
@@ -19,6 +21,7 @@ const fault = vi.hoisted(() => ({
   onClose: undefined as (() => Promise<void>) | undefined,
   malformed: false,
   onSync: undefined as (() => void) | undefined,
+  onRead: undefined as (() => Promise<void>) | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -34,6 +37,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         return handle;
       const close = handle.close.bind(handle);
       const sync = handle.sync.bind(handle);
+      const read = handle.read.bind(handle);
+      handle.read = (async (...args: Parameters<FileHandle["read"]>) => {
+        const result: Awaited<ReturnType<FileHandle["read"]>> =
+          await Reflect.apply(read, handle, args);
+        await fault.onRead?.();
+        return result;
+      }) as FileHandle["read"];
       handle.sync = async () => {
         await sync();
         fault.onSync?.();
@@ -113,6 +123,8 @@ import { ArtifactFileCleanupFailure } from "../../src/artifacts/ArtifactFileOper
 import { AnalysisError } from "../../src/domain/analysisErrorBase.js";
 import { AnalysisCancelledError } from "../../src/domain/analysisErrorCore.js";
 import { PrivateRuntimeRoot } from "../../src/process/PrivateRuntimeRoot.js";
+import { FIRMWARE_LIMITS } from "../../src/firmware/FirmwareRelease.js";
+import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
 
 const providers: FirmwareProvider[] = [];
@@ -123,14 +135,190 @@ beforeEach(() => {
   fault.onClose = undefined;
   fault.malformed = false;
   fault.onSync = undefined;
+  fault.onRead = undefined;
 });
 afterEach(async () => {
   fault.blocked.clear();
   fault.onClose = undefined;
+  fault.onRead = undefined;
   vi.restoreAllMocks();
   for (const handle of fault.handles) await handle.close();
   await Promise.all(providers.splice(0).map((provider) => provider.close()));
 });
+
+it.each(["snapshot", "range"] as const)(
+  "preserves a native read failure when cancellation follows the same pending %s read",
+  async (stage) => {
+    const root = await createTestTempDirectory("rea-firmware-read-race-");
+    const path = join(root, "input.bin");
+    const work = join(root, "work");
+    await mkdir(work);
+    await writeFile(path, "firmware bytes");
+    const controller = new AbortController();
+    const failure = Object.assign(new Error("physical firmware read failed"), {
+      code: "EIO",
+    });
+    fault.selected = stage === "snapshot" ? path : "firmware.bin";
+    fault.onRead = async () => {
+      fault.onRead = undefined;
+      controller.abort("cancellation after physical read failure");
+      throw failure;
+    };
+    const files = new FirmwareFileAccess();
+    try {
+      const raw = await files
+        .snapshot(
+          {
+            operation: "extract_firmware",
+            input: {
+              path,
+              output_directory: join(root, "unused"),
+              max_depth: 3,
+              max_output_bytes: 1024,
+              max_output_files: 10,
+              ...(stage === "range" ? { range: { offset: 1, length: 4 } } : {}),
+            },
+          },
+          work,
+          controller.signal,
+        )
+        .catch((cause: unknown) => cause);
+      expect(raw).toBeInstanceOf(ArtifactFileCleanupFailure);
+      if (!(raw instanceof ArtifactFileCleanupFailure)) throw raw;
+      expect(raw.fileCleanupFailure.outcome).toEqual({
+        kind: "failed",
+        cause: failure,
+      });
+      expect(fault.handles).toHaveLength(1);
+      expect(raw.fileCleanupFailure.owner.handle).toBe(fault.handles[0]);
+      expect(fault.handles[0]?.fd).toBeGreaterThanOrEqual(0);
+      fault.blocked.clear();
+      await files.retryCleanup();
+      expect(fault.handles[0]?.fd).toBe(-1);
+    } finally {
+      fault.blocked.clear();
+      await files.close();
+    }
+  },
+);
+
+it("copies a stable firmware file exactly at the input allowance", async () => {
+  const root = await createTestTempDirectory("rea-firmware-exact-input-");
+  const path = join(root, "input.bin");
+  const work = join(root, "work");
+  await mkdir(work);
+  const prepared = await open(path, "wx");
+  try {
+    await prepared.truncate(FIRMWARE_LIMITS.inputBytes);
+  } finally {
+    await prepared.close();
+  }
+  const files = new FirmwareFileAccess();
+  try {
+    const snapshot = await files.snapshot(
+      { operation: "inspect_firmware_regions", input: { path } },
+      work,
+      new AbortController().signal,
+    );
+    expect(snapshot.size).toBe(FIRMWARE_LIMITS.inputBytes);
+    expect(snapshot.selection).toMatchObject({
+      length: FIRMWARE_LIMITS.inputBytes,
+      sha256: snapshot.subject.sha256,
+    });
+    const copied = await open(snapshot.inputPath, "r");
+    try {
+      expect((await copied.stat()).size).toBe(FIRMWARE_LIMITS.inputBytes);
+    } finally {
+      await copied.close();
+    }
+  } finally {
+    await files.close();
+  }
+});
+
+it.each(
+  (["inspect_firmware_regions", "extract_firmware"] as const).flatMap(
+    (operation) => [false, true].map((denyClose) => ({ operation, denyClose })),
+  ),
+)(
+  "keeps typed input growth and exact descriptor ownership for $operation (close denied=$denyClose)",
+  async ({ operation, denyClose }) => {
+    const root = await createTestTempDirectory("rea-firmware-growth-");
+    const path = join(root, "input.bin");
+    const work = join(root, "work");
+    await mkdir(work);
+    const prepared = await open(path, "wx");
+    try {
+      await prepared.truncate(FIRMWARE_LIMITS.inputBytes);
+    } finally {
+      await prepared.close();
+    }
+    fault.selected = path;
+    if (!denyClose)
+      fault.onClose = async () => {
+        fault.blocked.clear();
+      };
+    fault.onRead = async () => {
+      fault.onRead = undefined;
+      await appendFile(path, Buffer.from([1]));
+    };
+    const request =
+      operation === "inspect_firmware_regions"
+        ? { operation, input: { path } }
+        : {
+            operation,
+            input: {
+              path,
+              output_directory: join(root, "unused"),
+              max_depth: 3,
+              max_output_bytes: 1024,
+              max_output_files: 10,
+            },
+          };
+    const files = new FirmwareFileAccess();
+    try {
+      const raw = await files
+        .snapshot(request, work, new AbortController().signal)
+        .catch((cause: unknown) => cause);
+      if (denyClose) expect(raw).toBeInstanceOf(ArtifactFileCleanupFailure);
+      const error = firmwareFailure(raw, "binwalk", operation);
+      const projected = projectAnalysisError(error);
+      expect(projected.code).toBe(
+        denyClose ? "cleanup_incomplete" : "invalid_request",
+      );
+      const primary = denyClose ? error.diagnostics?.primary_error : projected;
+      expect(primary).toMatchObject({
+        code: "invalid_request",
+        details: {
+          issues: [
+            {
+              path: ["path"],
+              reason: "out_of_range",
+              message: expect.stringContaining(
+                String(FIRMWARE_LIMITS.inputBytes),
+              ),
+            },
+          ],
+        },
+      });
+      expect(fault.handles).toHaveLength(1);
+      if (denyClose) {
+        expect(fault.handles[0]?.fd).toBeGreaterThanOrEqual(0);
+        fault.blocked.clear();
+        await files.retryCleanup();
+        expect(error.cleanupIncomplete).toBe(false);
+        expect(error.diagnostics?.primary_error).toMatchObject({
+          code: "invalid_request",
+        });
+        expect(projectAnalysisError(error).code).toBe("invalid_request");
+      }
+      expect(fault.handles[0]?.fd).toBe(-1);
+    } finally {
+      fault.blocked.clear();
+      await files.close();
+    }
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "rejects writerless FIFO input, hash and report through the compiled reader",

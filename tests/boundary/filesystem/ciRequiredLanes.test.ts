@@ -175,6 +175,41 @@ it("holds native and provider fan-out behind static validation while portable fe
 
 it("binds provider build reuse to the current run while keeping standalone dispatches independent", async () => {
   const { jobs } = await workflow();
+  const buildSteps = z
+    .array(
+      z.object({
+        run: z.string().optional(),
+        uses: z.string().optional(),
+        shell: z.string().optional(),
+        if: z.string().optional(),
+        with: z.record(z.string(), z.unknown()).optional(),
+        "continue-on-error": z.boolean().optional(),
+      }),
+    )
+    .parse(jobs.build?.steps);
+  const prepare = buildSteps.findIndex(
+    (step) => step.run === "npm run test:prepare",
+  );
+  const stage = buildSteps.findIndex((step) =>
+    step.run?.includes("portable-build-cache.mjs snapshot"),
+  );
+  const upload = buildSteps.findIndex(
+    (step) => step.with?.name === "rea-build-cache",
+  );
+  expect(prepare).toBeGreaterThanOrEqual(0);
+  expect(stage).toBeGreaterThan(prepare);
+  expect(upload).toBeGreaterThan(stage);
+  expect(buildSteps[stage]?.run).toContain(
+    "npm run --silent test:prepare -- --dry=json |",
+  );
+  expect(buildSteps[stage]?.if).toBeUndefined();
+  expect(buildSteps[stage]?.shell).toBe("bash");
+  expect(buildSteps[stage]?.["continue-on-error"]).not.toBe(true);
+  expect(buildSteps[upload]?.if).toBeUndefined();
+  expect(buildSteps[upload]?.with).toMatchObject({
+    path: ".cache/ci-build-cache/",
+    "if-no-files-found": "error",
+  });
   const consumers = [
     "browser",
     "binary_layout",
@@ -252,6 +287,7 @@ it("binds provider build reuse to the current run while keeping standalone dispa
             if: z.string().optional(),
             with: z.record(z.string(), z.unknown()).optional(),
             "continue-on-error": z.boolean().optional(),
+            run: z.string().optional(),
           }),
         ),
       }),
@@ -276,6 +312,9 @@ it("binds provider build reuse to the current run while keeping standalone dispa
   });
   expect(download?.if).toBe("inputs.build_cache_artifact != ''");
   expect(download?.["continue-on-error"]).not.toBe(true);
+  expect(action.runs.steps.find((step) => step.id === "plan")?.run).toContain(
+    'node scripts/ci/portable-build-cache.mjs key >> "$GITHUB_OUTPUT"',
+  );
   for (const step of action.runs.steps.filter(
     (step) => step.id === "plan" || step.uses?.startsWith("actions/cache"),
   ))

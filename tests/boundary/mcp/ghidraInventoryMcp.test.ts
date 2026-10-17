@@ -106,6 +106,24 @@ it("retains byte-search coverage and rejects malformed pages before creating Evi
       });
       expect(invalidCoverage.structuredContent).toBeUndefined();
     }
+    for (const [address, segment] of [
+      ["0x402000", ".bss"],
+      ["overlay:0x401000", ".text"],
+      ["invalid", ".text"],
+    ]) {
+      output = jsonValueSchema.parse({
+        ...page,
+        matches: [{ ...page.matches[0], address, segment }],
+      });
+      const outsideCoverage = await harness.mcp.callTool({
+        name: "search_bytes",
+        arguments: { pattern: "48 ??" },
+      });
+      expect(parseMcpToolError(outsideCoverage)).toMatchObject({
+        error: { code: "unreadable_output" },
+      });
+      expect(outsideCoverage.structuredContent).toBeUndefined();
+    }
     const calls = harness.calls.length;
     for (const args of [{ pattern: "??" }, { pattern: "48", mask: "ffff" }]) {
       const invalid = await harness.mcp.callTool({

@@ -109,41 +109,66 @@ it("advertises and executes Android and Apple inventory projections", async () =
   });
 });
 
-it("retains Harmony unavailable components and their source Evidence through MCP", async () => {
-  const client = await connect();
-  const root = await createTestTempDirectory("rea-harmony-graph-mcp-");
-  const path = join(root, "Locked.hap");
-  const writer = new ZipWriter(new Uint8ArrayWriter());
-  await writer.add("module.json", new TextReader("{}"));
-  await writer.add("ets/modules.abc", new TextReader("opaque bytecode"), {
-    password: "fixture-only",
-  });
-  await writeFile(path, await writer.close());
-  const inventory = parseEvidence(
-    await runProviderAnalysis(path, "inventory_artifact", {}),
-  );
-  const reply = await client.callTool({
-    name: "project_harmony_application_graph",
-    arguments: { inventory_evidence: [inventory] },
-  });
-  if (reply.isError === true) throw new Error(JSON.stringify(reply));
-  const evidence = parseEvidence(reply.structuredContent);
-  expect(evidence.normalized_result).toMatchObject({
-    unavailable_components: [
-      expect.objectContaining({
-        path: "ets/modules.abc",
-        artifact_id: null,
-        sha256: null,
-        encrypted: true,
-      }),
-    ],
-    coverage: { status: "partial", inventory_complete: true },
-  });
-  const bundle = await client.callTool({
-    name: "get_evidence_bundle",
-    arguments: {},
-  });
-  expect(bundle.structuredContent).toMatchObject({
-    result: { records: expect.arrayContaining([inventory, evidence]) },
-  });
-});
+it.each([
+  {
+    family: "Harmony",
+    name: "Locked.hap",
+    manifest: "module.json",
+    unread: "ets/modules.abc",
+    operation: "project_harmony_application_graph",
+  },
+  {
+    family: "Android",
+    name: "Locked.apk",
+    manifest: "AndroidManifest.xml",
+    unread: "classes.dex",
+    operation: "project_android_application_graph",
+  },
+  {
+    family: "Apple",
+    name: "Locked.ipa",
+    manifest: "Payload/Locked.app/Info.plist",
+    unread: "Payload/Locked.app/libentry.dylib",
+    operation: "project_apple_application_graph",
+  },
+])(
+  "retains $family unavailable components and their source Evidence through MCP",
+  async ({ name, manifest, unread, operation }) => {
+    const client = await connect();
+    const root = await createTestTempDirectory("rea-harmony-graph-mcp-");
+    const path = join(root, name);
+    const writer = new ZipWriter(new Uint8ArrayWriter());
+    await writer.add(manifest, new TextReader("{}"));
+    await writer.add(unread, new TextReader("opaque bytecode"), {
+      password: "fixture-only",
+    });
+    await writeFile(path, await writer.close());
+    const inventory = parseEvidence(
+      await runProviderAnalysis(path, "inventory_artifact", {}),
+    );
+    const reply = await client.callTool({
+      name: operation,
+      arguments: { inventory_evidence: [inventory] },
+    });
+    if (reply.isError === true) throw new Error(JSON.stringify(reply));
+    const evidence = parseEvidence(reply.structuredContent);
+    expect(evidence.normalized_result).toMatchObject({
+      unavailable_components: [
+        expect.objectContaining({
+          path: unread,
+          artifact_id: null,
+          sha256: null,
+          encrypted: true,
+        }),
+      ],
+      coverage: { status: "partial", inventory_complete: true },
+    });
+    const bundle = await client.callTool({
+      name: "get_evidence_bundle",
+      arguments: {},
+    });
+    expect(bundle.structuredContent).toMatchObject({
+      result: { records: expect.arrayContaining([inventory, evidence]) },
+    });
+  },
+);

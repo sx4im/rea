@@ -1,3 +1,4 @@
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
 import { createHash } from "node:crypto";
 import { chmod, open, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -72,6 +73,11 @@ export class PcapSnapshot {
       try {
         return await read();
       } catch (cause) {
+        const cancellation = regularFileCancellation(cause);
+        if (cancellation !== undefined)
+          throw new AnalysisCancelledError(OPERATION, {
+            cause: cancellation.reason,
+          });
         if (signal?.aborted)
           throw new AnalysisCancelledError(OPERATION, { cause });
         if (cause instanceof AnalysisError) throw cause;
@@ -186,9 +192,17 @@ export class PcapSnapshot {
       signal?.throwIfAborted();
       return { bytes: copied, sha256: hash.digest("hex") };
     } catch (cause) {
-      if (signal?.aborted)
-        throw new AnalysisCancelledError(OPERATION, { cause });
+      if (cause instanceof RegularFileAdmissionFailure) this.own(cause.owner);
+      const primary =
+        cause instanceof RegularFileAdmissionFailure ? cause.cause : cause;
+      const cancellation = regularFileCancellation(primary);
+      if (cancellation !== undefined)
+        throw new AnalysisCancelledError(OPERATION, {
+          cause: cancellation.reason,
+        });
       if (cause instanceof AnalysisError) throw cause;
+      if (signal?.aborted)
+        throw new AnalysisCancelledError(OPERATION, { cause: signal.reason });
       throw new AnalysisResourceConstraintError(
         OPERATION,
         "file-size",
@@ -242,10 +256,17 @@ export class PcapSnapshot {
         );
       await this.release(file);
     } catch (cause) {
-      if (signal?.aborted)
-        throw new AnalysisCancelledError(OPERATION, { cause });
       if (cause instanceof RegularFileAdmissionFailure) this.own(cause.owner);
+      const primary =
+        cause instanceof RegularFileAdmissionFailure ? cause.cause : cause;
+      const cancellation = regularFileCancellation(primary);
+      if (cancellation !== undefined)
+        throw new AnalysisCancelledError(OPERATION, {
+          cause: cancellation.reason,
+        });
       if (cause instanceof AnalysisError) throw cause;
+      if (signal?.aborted)
+        throw new AnalysisCancelledError(OPERATION, { cause: signal.reason });
       throw new AnalysisArtifactChangedError(
         OPERATION,
         selectedPath,

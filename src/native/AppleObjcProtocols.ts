@@ -33,7 +33,13 @@ export const createObjcProtocolReader = (input: {
     }
     return names;
   };
-  const methods = (address: bigint, required: boolean, instance: boolean) => {
+  const methods = (
+    address: bigint,
+    required: boolean,
+    instance: boolean,
+    /** Entries skipped for an empty selector, reported by the declaring protocol. */
+    emptySelectors: string[],
+  ) => {
     const output: ObjcSwiftMetadata["objc_protocols"][number]["methods"] = [];
     if (address === 0n) return output;
     const flags = read.u32(address),
@@ -50,11 +56,15 @@ export const createObjcProtocolReader = (input: {
         : read.pointer(entry);
       if (relative && (flags & 0x40000000) === 0)
         selector = read.pointer(selector);
+      // One empty selector is reported on its own, so the protocol and its
+      // other method declarations keep their decoded records.
       const selectorName = read.string(selector);
-      if (selectorName.length === 0)
-        throw new TypeError(
-          "Objective-C protocol method has an empty selector",
+      if (selectorName.length === 0) {
+        emptySelectors.push(
+          `${required ? "required" : "optional"} ${instance ? "instance" : "class"} method ${String(index)} at 0x${entry.toString(16)} has an empty selector`,
         );
+        continue;
+      }
       output.push({
         selector: selectorName,
         method_type: instance ? "instance" : "class",
@@ -77,14 +87,19 @@ export const createObjcProtocolReader = (input: {
       const adopted = list(read.pointer(address + 16n));
       if (protocolName.length === 0)
         throw new TypeError("Objective-C protocol has an empty name");
+      const skipped: string[] = [];
       const required = [
-        ...methods(read.pointer(address + 24n), true, true),
-        ...methods(read.pointer(address + 32n), true, false),
+        ...methods(read.pointer(address + 24n), true, true, skipped),
+        ...methods(read.pointer(address + 32n), true, false, skipped),
       ];
       const optional = [
-        ...methods(read.pointer(address + 40n), false, true),
-        ...methods(read.pointer(address + 48n), false, false),
+        ...methods(read.pointer(address + 40n), false, true, skipped),
+        ...methods(read.pointer(address + 48n), false, false, skipped),
       ];
+      for (const message of skipped)
+        failures.push(
+          `Protocol 0x${address.toString(16)}: Objective-C protocol ${protocolName} ${message}`,
+        );
       result.objc_protocols.push({
         name: protocolName,
         methods: required,
@@ -97,7 +112,10 @@ export const createObjcProtocolReader = (input: {
         methods: required,
         optional_methods: optional,
         location: read.location(address),
-        decode: { status: "decoded", reason: null },
+        decode:
+          skipped.length === 0
+            ? { status: "decoded", reason: null }
+            : { status: "partial", reason: "protocol_method_selector_empty" },
         evidence: read.evidence(
           address,
           "Objective-C protocol declaration and encoded method lists; IMP fields are not handler targets",

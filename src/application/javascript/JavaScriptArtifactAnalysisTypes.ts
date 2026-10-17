@@ -170,6 +170,22 @@ export interface AnalyzedJavaScriptArtifactFile<
   };
 }
 
+/**
+ * A JavaScript source selected for analysis whose worker produced no facts.
+ * The analysis failure carries the reason; the null parse status alone reads
+ * as "nothing there" instead of "not analyzed".
+ */
+export const isSkippedJavaScriptAnalysis = (
+  entry: Pick<
+    AnalyzedJavaScriptArtifactFile,
+    "file" | "javascript" | "analysis_failure"
+  >,
+): boolean =>
+  entry.file.kind === "javascript" &&
+  entry.file.text.included &&
+  entry.javascript === null &&
+  entry.analysis_failure !== undefined;
+
 /** Complete static-analysis projection before graph construction. */
 export interface JavaScriptArtifactAnalysis<
   SemanticIr extends JavaScriptModuleSemanticIr = JavaScriptSemanticIr,

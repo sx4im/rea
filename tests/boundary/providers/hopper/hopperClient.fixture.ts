@@ -37,6 +37,10 @@ export class HopperFixtureLauncher implements BridgeLauncher {
     readonly diagnosticMode: "quiet" | "noisy" | "noisy_no_socket" = "quiet",
     readonly healthMode: "ready" | "gated" = "ready",
     readonly shutdownMode: "acknowledge" | "exit-without-ack" = "acknowledge",
+    readonly inventoryFailure:
+      | "none"
+      | "capability_unavailable"
+      | "bridge_exception" = "none",
   ) {}
 
   launch(session: BridgeSession) {
@@ -54,6 +58,7 @@ export class HopperFixtureLauncher implements BridgeLauncher {
         this.shutdownMode,
         this.diagnosticMode,
         this.healthMode,
+        this.inventoryFailure,
       ],
       { stdio: ["ignore", "pipe", "pipe", "ipc"] },
     );

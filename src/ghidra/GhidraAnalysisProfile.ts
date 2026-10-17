@@ -267,7 +267,7 @@ export const resolveGhidraAnalysisProfile = async (
           ? {
               load_image_evidence: dosCom
                 ? "independent-com-mapping-context-v1"
-                : "independent-mz-mapping-relocations-v1",
+                : "independent-mz-mapping-relocations-v2",
             }
           : {}),
         jump_table_evidence: "typed-case-default-blocks-v1",

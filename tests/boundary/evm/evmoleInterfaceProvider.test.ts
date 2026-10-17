@@ -10,6 +10,8 @@ import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.
 import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { waitForProviderProcessReady } from "../../fixtures/providerProcess.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
+import { parseEvidence } from "../../../src/domain/evidence.js";
+import { EvmInterfaceService } from "../../../src/application/evm/EvmInterfaceService.js";
 import {
   createTestWorkspace,
   removeTestWorkspace,
@@ -636,11 +638,23 @@ it.runIf(!unsupportedHost)(
   },
 );
 
-it.runIf(!unsupportedHost).each(["late-cancellation", "cleanup-failure"])(
+it
+  .runIf(!unsupportedHost)
+  .each([
+    "success",
+    "late-cancellation",
+    "cleanup-failure",
+    "cancelled-cleanup-failure",
+  ])(
   "retains captured warnings after a successful worker: %s",
   async (scenario) => {
     const { path } = await fixture();
+    const source = await readFile(path);
     const controller = new AbortController();
+    const reason = { requested: "stop during root removal" };
+    let denyClose =
+      scenario === "cleanup-failure" ||
+      scenario === "cancelled-cleanup-failure";
     let ownedRoot = "";
     const provider = new EvmoleInterfaceProvider(
       {},
@@ -679,16 +693,29 @@ it.runIf(!unsupportedHost).each(["late-cancellation", "cleanup-failure"])(
           path: root.path,
           close: async () => {
             await root.close();
-            if (scenario === "late-cancellation") controller.abort();
-            else throw new Error("reported cleanup failure");
+            if (
+              scenario === "late-cancellation" ||
+              scenario === "cancelled-cleanup-failure"
+            )
+              controller.abort(reason);
+            if (denyClose) throw new Error("reported cleanup failure");
           },
         };
       },
     );
+    onTestFinished(async () => {
+      denyClose = false;
+      await provider.close();
+    });
     const result = await provider.inspect(
       { path, encoding: "hex" },
       { signal: controller.signal },
     );
+    if (scenario === "success") {
+      expect(result.ok).toBe(true);
+      await expect(access(ownedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
     if (result.ok) throw new Error("Expected lifecycle failure");
     const output = { stdout: "", stderr: "upstream warning", truncated: false };
     expect(projectAnalysisError(result.error)).toMatchObject({
@@ -699,6 +726,31 @@ it.runIf(!unsupportedHost).each(["late-cancellation", "cleanup-failure"])(
           ? { captured_output: output }
           : { diagnostics: { captured_output: output } },
     });
+    const evidence = parseEvidence(result.error.partialObservation);
+    expect(evidence.subject?.local_path).toBe(path);
+    expect(evidence.subject?.digest.sha256).toBe(
+      createHash("sha256").update(source).digest("hex"),
+    );
+    expect(await readFile(path)).toEqual(source);
+    expect(evidence).toMatchObject({
+      operation: "inspect_evm_interface",
+      parameters: { path, encoding: "hex" },
+      provider: { id: "evmole-interface" },
+      raw_result: { functions: [] },
+      normalized_result: {
+        artifact: { path, encoding: "hex" },
+        bytecode: { hex: "60006000f3", bytes: 5 },
+        diagnostics: output,
+      },
+    });
+    expect(evidence.limitations.length).toBeGreaterThan(0);
+    if (scenario === "late-cancellation")
+      expect(result.error.cause).toBe(reason);
+    else expect(result.error.cleanupIncomplete).toBe(true);
+    const forwarded = await new EvmInterfaceService({
+      inspect: async () => result,
+    }).inspect({ path, encoding: "hex" });
+    expect(forwarded).toBe(result);
     await expect(access(ownedRoot)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );

@@ -233,8 +233,12 @@ rea project-android-application-graph '{"inventory_evidence":[<inventory_artifac
 ```
 
 The projection reports exact component paths and hashes, runtime-family hints,
-and path-based bridge hypotheses. It does not decode DEX or claim observed
-runtime calls. Framework hints match complete native library names, such as
+and path-based bridge hypotheses. File and slice occurrences supply component
+endpoints; directory trees and symlinks retain their identities in the source
+inventory without being classified as code files. It does not decode DEX or
+claim observed runtime calls. DEX/JVM runtime hints summarize the classified
+bytecode component lists. Framework hints match complete native library names,
+such as
 `libreactnativejni.so`, `libreactnative.so`, `libhermes.so`,
 `libhermes_executor.so`, `libflutter.so`, and `libunity.so`; unrelated names
 such as `libcommunity.so` and `libreactivity.so` do not identify those families.

@@ -32,7 +32,7 @@ it("runs static .app decoding without registering native analysis engines", asyn
   const staticSession = await createArtifactBinarySession({
     REA_ANALYSIS_PROVIDER: "auto",
   });
-  expect(staticSession.status()).toMatchObject({
+  expect(await staticSession.status()).toMatchObject({
     analysis_provider_candidates: [],
   });
   await staticSession.close();

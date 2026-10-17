@@ -108,12 +108,13 @@ const buildIgnored = async (
     try {
       text = await readRegularFileText(policyPath, { signal });
     } catch (cause: unknown) {
+      if (signal?.aborted === true && cause === signal.reason) throw cause;
       if (!(cause instanceof RegularFileCleanupFailure)) throw cause;
-      const retry = await retryRegularFileCleanup(cause, resources);
+      const retry = await retryRegularFileCleanup(cause, resources, signal);
       if (retry.cleanup !== undefined) {
         const primary =
-          cause.outcome.kind === "failed"
-            ? cause.outcome.cause
+          retry.outcome.kind === "failed"
+            ? retry.outcome.cause
             : cause.cleanupCause;
         return err({
           ...failure(

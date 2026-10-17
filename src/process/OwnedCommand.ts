@@ -25,6 +25,13 @@ import {
 
 /** A short-lived command failed its lifecycle or complete-output contract. */
 export class OwnedCommandFailure extends Error {
+  readonly #cancellation: { readonly reason: unknown } | undefined;
+
+  /** Opaque caller reason observed by the owner, distinct from physical causes. */
+  get cancellation(): { readonly reason: unknown } | undefined {
+    return this.#cancellation;
+  }
+  readonly processError: Error | undefined;
   readonly cleanupResult: ProcessCleanupFailure | undefined;
   readonly collectionFailure: boolean;
   readonly preparationFailure:
@@ -37,6 +44,8 @@ export class OwnedCommandFailure extends Error {
     readonly snapshot: ProviderProcessSnapshot | null = null,
     readonly cleanupFailure: string | null = null,
     options?: ErrorOptions & {
+      readonly cancellation?: { readonly reason: unknown } | undefined;
+      readonly processError?: Error | undefined;
       readonly cleanupResult?: ProcessCleanupFailure;
       readonly collectionFailure?: boolean;
       readonly preparationFailure?: DarwinProcessOwnershipInspectionError;
@@ -45,6 +54,11 @@ export class OwnedCommandFailure extends Error {
     readonly cleanupOwner?: ProviderProcessSupervisor,
   ) {
     super(message, options);
+    this.#cancellation =
+      options?.cancellation === undefined
+        ? undefined
+        : { reason: options.cancellation.reason };
+    this.processError = options?.processError;
     this.cleanupResult = options?.cleanupResult;
     this.collectionFailure = options?.collectionFailure ?? false;
     this.preparationFailure = options?.preparationFailure;
@@ -68,6 +82,8 @@ interface OwnedCommandLimits {
   readonly diagnosticBytes: number;
   /** Accept an ordinary nonzero exit after output closes without other process errors. */
   readonly acceptNonZeroExit?: boolean;
+  /** Interpret complete physical output synchronously before awaited final cleanup. */
+  readonly observeCompleted?: (snapshot: ProviderProcessSnapshot) => void;
   /**
    * Receives stdout instead of the retained snapshot, for output parsed as it
    * arrives. The command completes only after the sink finishes. The sink
@@ -98,6 +114,9 @@ export const runOwnedCommand = async (
     throw new OwnedCommandFailure(
       "cancelled",
       "Command cancelled before launch.",
+      null,
+      null,
+      { cancellation: { reason: callerSignal.reason } },
     );
   const deadline = new ProviderStartupDeadline(limits.timeoutMs, callerSignal);
   try {
@@ -158,6 +177,11 @@ const collectOwnedCommand = async (
         null,
         {
           cause,
+          ...(interruption === "cancelled"
+            ? {
+                cancellation: { reason: signal.reason },
+              }
+            : {}),
           ...(preparationFailure === undefined ? {} : { preparationFailure }),
         },
       );
@@ -165,6 +189,7 @@ const collectOwnedCommand = async (
   }
   let exceeded = false;
   let processFailure: string | undefined;
+  let processError: Error | undefined;
   const supervisor = new ProviderProcessSupervisor(
     {
       ...launched,
@@ -179,7 +204,10 @@ const collectOwnedCommand = async (
       onDiagnostic: (event) => {
         if (event.type === "output" && event.truncated === true)
           exceeded = true;
-        if (event.type === "error") processFailure = event.message;
+        if (event.type === "error") {
+          processFailure ??= event.message;
+          processError ??= event.cause;
+        }
       },
     },
   );
@@ -203,6 +231,11 @@ const collectOwnedCommand = async (
           interruption === "cancelled"
             ? "Command cancelled."
             : "Command deadline elapsed.",
+          null,
+          null,
+          interruption === "cancelled"
+            ? { cancellation: { reason: signal.reason } }
+            : undefined,
         );
       if (exceeded)
         throw new OwnedCommandFailure(
@@ -211,6 +244,7 @@ const collectOwnedCommand = async (
         );
       if (processFailure !== undefined)
         throw new OwnedCommandFailure("process", processFailure, null, null, {
+          processError,
           collectionFailure: true,
         });
       await waitForAbortableDelay(25, signal);
@@ -227,6 +261,10 @@ const collectOwnedCommand = async (
           ? "Command cancelled."
           : "Command deadline elapsed.",
         snapshot,
+        null,
+        interruption === "cancelled"
+          ? { cancellation: { reason: signal.reason } }
+          : undefined,
       );
     if (exceeded)
       throw new OwnedCommandFailure(
@@ -251,8 +289,9 @@ const collectOwnedCommand = async (
           "Command failed; inspect its exit status and diagnostics.",
         snapshot,
         null,
-        { collectionFailure: processFailure !== undefined },
+        { processError, collectionFailure: processFailure !== undefined },
       );
+    limits.observeCompleted?.(snapshot);
   } catch (cause: unknown) {
     failure =
       cause instanceof OwnedCommandFailure
@@ -269,6 +308,9 @@ const collectOwnedCommand = async (
   abandoned.abort();
   const stopped = await supervisor.stop();
   const snapshot = supervisor.snapshot();
+  const cancellation =
+    failure?.cancellation ??
+    (callerSignal?.aborted ? { reason: callerSignal.reason } : undefined);
   if (stopped.status === "incomplete" && retainCleanup !== undefined)
     retainCleanup(supervisor, stopped);
   else if (stopped.status === "incomplete")
@@ -278,7 +320,10 @@ const collectOwnedCommand = async (
       snapshot,
       stopped.reason,
       {
-        ...(failure === undefined ? {} : { cause: failure }),
+        cancellation,
+        ...(failure === undefined
+          ? {}
+          : { cause: failure, processError: failure.processError }),
         ...(stopped.cleanupResult === undefined
           ? {}
           : { cleanupResult: stopped.cleanupResult }),
@@ -297,6 +342,8 @@ const collectOwnedCommand = async (
       failure.cleanupFailure,
       {
         cause: failure,
+        cancellation,
+        processError: failure.processError,
         ...(failure.cleanupResult === undefined
           ? {}
           : { cleanupResult: failure.cleanupResult }),
@@ -305,7 +352,15 @@ const collectOwnedCommand = async (
       failure.resources,
     );
   if (callerSignal?.aborted)
-    throw new OwnedCommandFailure("cancelled", "Command cancelled.", snapshot);
+    throw new OwnedCommandFailure(
+      "cancelled",
+      "Command cancelled.",
+      snapshot,
+      null,
+      {
+        cancellation: { reason: callerSignal.reason },
+      },
+    );
   return snapshot;
 };
 

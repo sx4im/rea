@@ -18,6 +18,10 @@ describe("RPC object property ownership", () => {
     ['url: "/trpc/old", url: "/trpc/live"', "/trpc/live"],
     ['url: "/trpc/old", url: runtimeUrl', null],
     ['url: "/trpc/old", ...options', null],
+    [
+      'url: "/trpc/old", ...{helper(){},url:"/trpc/ignored",url:"/trpc/live"}',
+      "/trpc/live",
+    ],
     ['url: "/trpc/old", [key]: runtimeUrl', null],
     ['url: "/trpc/old", get url() { return runtimeUrl; }', null],
     ['url: "/trpc/old", url() {}', null],
@@ -741,5 +745,24 @@ it("keeps existing network endpoint recognition unchanged", () => {
       value: "invoice.list",
       mechanism: "trpc:procedure:useQuery",
     },
+  ]);
+});
+
+it("keeps named spreads unknown without proving nullish aliases", () => {
+  expect(
+    rpcEndpoints(`var p=null;const root=Function("return this")();
+    root.p={url:"/changed"};httpLink({url:"/safe",...p});`),
+  ).toEqual([]);
+});
+
+it("skips propertyless literal spreads while retaining string and unknown spreads", () => {
+  expect(
+    rpcEndpoints(`
+      httpLink({url:"/primitives",...false,...42,...1n,[void effect()]:0});
+      httpLink({url:"/string",..."ab"});
+      httpLink({url:"/unknown",...options});
+    `),
+  ).toEqual([
+    { kind: "network", value: "/primitives", mechanism: "trpc:link:httpLink" },
   ]);
 });

@@ -125,7 +125,7 @@ it("admits Rizin startup across a bound analysis session", async () => {
   expect((await analysisSession.open(target)).ok).toBe(true);
   const initialRunId = z
     .object({ analysis_run: z.object({ run_id: z.string() }) })
-    .parse(analysisSession.status()).analysis_run.run_id;
+    .parse(await analysisSession.status()).analysis_run.run_id;
   const manager = {
     start: async () => ({
       ok: true,
@@ -170,7 +170,7 @@ it("admits Rizin startup across a bound analysis session", async () => {
     expect((await analysisSession.open(target)).ok).toBe(true);
     const currentRunId = z
       .object({ analysis_run: z.object({ run_id: z.string() }) })
-      .parse(analysisSession.status()).analysis_run.run_id;
+      .parse(await analysisSession.status()).analysis_run.run_id;
     expect(currentRunId).not.toBe(initialRunId);
     expect(analysisSession.activeTarget()?.path).toBe(target);
   } finally {

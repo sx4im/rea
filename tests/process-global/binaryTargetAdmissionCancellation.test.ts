@@ -51,7 +51,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 import { parseBinaryTarget } from "../../src/application/BinaryTargetResolver.js";
 import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
-import { RegularFileAdmissionFailure } from "../../src/filesystem/RegularFile.js";
+import {
+  RegularFileAdmissionFailure,
+  RegularFileOperationCancelled,
+} from "../../src/filesystem/RegularFile.js";
 import { createApplicationMcpHarness } from "../fixtures/applicationMcpHarness.js";
 import { createTestBinarySession } from "../fixtures/binarySession.js";
 import { advertisedMcpToolSchemas } from "../fixtures/advertisedMcpTool.js";
@@ -155,7 +158,10 @@ it("retains the cleanup failure and its file owner when cancelled admission cann
   }).catch((cause: unknown) => cause);
   expect(failure).toBeInstanceOf(RegularFileAdmissionFailure);
   if (!(failure instanceof RegularFileAdmissionFailure)) throw failure;
-  expect(failure.cause).toBe(reason);
+  expect(failure.cause).toBeInstanceOf(RegularFileOperationCancelled);
+  if (!(failure.cause instanceof RegularFileOperationCancelled))
+    throw failure.cause;
+  expect(failure.cause.reason).toBe(reason);
   expect(failure.cleanupCause).toBe(cleanup);
   expect(failure.owner.handle).toBe(admission.handles[0]);
   expect(failure.owner.handle.fd).toBeGreaterThanOrEqual(0);

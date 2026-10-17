@@ -15,7 +15,6 @@ import {
   collectContextBridgeMembers,
   electronCalleePath,
   electronStaticValue,
-  objectProperty,
 } from "./electronStaticAnalysisValues.js";
 import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
 import { addLocatedFinding } from "./javascriptStaticAnalysisFindings.js";
@@ -27,6 +26,7 @@ import {
 } from "./javascriptStaticAnalysisHelpers.js";
 import {
   semanticStaticPropertyKey,
+  staticObjectProperty,
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import type { JavaScriptFindingContext } from "./javascriptStaticAnalysisState.js";
@@ -58,7 +58,7 @@ const needsConstantOptions = (node: t.NewExpression): boolean => {
   const argument = argumentNode(node.arguments[0]);
   const options = argument && unwrapJavaScriptExpression(argument).node;
   if (t.isIdentifier(options)) return true;
-  const lookup = objectProperty(options, "webPreferences");
+  const lookup = staticObjectProperty(options, "webPreferences");
   return (
     lookup.status === "explicit" &&
     t.isIdentifier(unwrapJavaScriptExpression(lookup.property.value).node)
@@ -78,7 +78,7 @@ export function* finishElectronBrowserWindowsSteps(
       const options = argument && unwrapJavaScriptExpression(argument).node;
       if (t.isIdentifier(options))
         return hasElectronOptionObjectCandidate(options, index);
-      const lookup = objectProperty(options, "webPreferences");
+      const lookup = staticObjectProperty(options, "webPreferences");
       return (
         lookup.status === "explicit" &&
         hasElectronOptionObjectCandidate(lookup.property.value, index)
@@ -112,7 +112,7 @@ const inspectBrowserWindow = (
     (index &&
       resolveElectronOptionObject(options, node, index, ["webPreferences"])) ??
     options;
-  const lookup = objectProperty(resolvedOptions, "webPreferences");
+  const lookup = staticObjectProperty(resolvedOptions, "webPreferences");
   const declaredPreferences =
     lookup.status === "explicit"
       ? unwrapJavaScriptExpression(lookup.property.value).node
@@ -190,7 +190,7 @@ const collectWebPreferences = (
 } => {
   const preferences: ElectronWebPreference[] = [];
   let unknown = 0;
-  const effectivePreload = objectProperty(object, "preload");
+  const effectivePreload = staticObjectProperty(object, "preload");
   const preloadPath =
     effectivePreload.status === "explicit"
       ? staticPath(effectivePreload.property.value)
@@ -307,7 +307,7 @@ const inspectUtilityProcess = (
   const modulePath =
     moduleNode === undefined ? undefined : staticPath(moduleNode);
   const options = argumentNode(node.arguments[2]);
-  const serviceNameProperty = objectProperty(options, "serviceName");
+  const serviceNameProperty = staticObjectProperty(options, "serviceName");
   const serviceName =
     serviceNameProperty.status === "explicit"
       ? staticPath(serviceNameProperty.property.value)

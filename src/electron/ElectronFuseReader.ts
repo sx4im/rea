@@ -1,6 +1,6 @@
 import type { ResolvedElectronFuseFile } from "./ElectronFusePath.js";
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, type FileHandle } from "node:fs/promises";
 
 import {
   hasMachoMagic,
@@ -15,10 +15,13 @@ import {
   type ElectronFuseSlice,
 } from "../domain/electron/electronFuses.js";
 import {
-  openRegularFile,
   RegularFileChangedError,
   sameRegularFileState,
 } from "../filesystem/RegularFile.js";
+import {
+  withOwnedRegularFile,
+  type OwnedRegularFileOptions,
+} from "../filesystem/OwnedRegularFile.js";
 
 /** Admission and search bounds for one Electron executable. */
 export const ELECTRON_FUSE_LIMITS = {
@@ -80,6 +83,7 @@ export const readElectronFuseImage = async (
     readonly signal?: AbortSignal;
     readonly chunkBytes?: number;
     readonly selection?: ResolvedElectronFuseFile;
+    readonly retainFailedClose?: OwnedRegularFileOptions["retainFailedClose"];
   },
 ): Promise<ElectronFuseImage> => {
   const signal = options?.signal;
@@ -138,35 +142,42 @@ export const readElectronFuseImage = async (
     throw new TypeError(
       `chunkBytes must be an integer between 1 and ${ELECTRON_FUSE_LIMITS.chunkBytes}.`,
     );
-  const handle = await openRegularFile(path, { symlinks: "reject", signal });
-  try {
-    const opened = await handle.stat({ bigint: true });
-    if (!sameRegularFileState(before, opened))
-      throw new RegularFileChangedError(path);
-    await assertPathNodes();
-    const readAt = readerFor(handle, size, path, signal);
-    const container = await identifyContainer(readAt, size, path);
-    const scanned = await scanSlices(
-      handle,
-      path,
-      size,
-      container.slices,
-      chunkBytes,
-      signal,
-    );
-    const current = await recheckPath(path);
-    if (!sameRegularFileState(before, current))
-      throw new RegularFileChangedError(path);
-    await assertPathNodes();
-    return {
-      sha256: scanned.sha256,
-      bytes: size,
-      format: container.format,
-      slices: scanned.slices,
-    };
-  } finally {
-    await handle.close();
-  }
+  return withOwnedRegularFile(
+    path,
+    {
+      symlinks: "reject",
+      ...(signal === undefined ? {} : { signal }),
+      ...(options?.retainFailedClose === undefined
+        ? {}
+        : { retainFailedClose: options.retainFailedClose }),
+    },
+    async (owned) => {
+      const opened = await owned.stat({ bigint: true });
+      if (!sameRegularFileState(before, opened))
+        throw new RegularFileChangedError(path);
+      await assertPathNodes();
+      const readAt = readerFor(owned, size, path, signal);
+      const container = await identifyContainer(readAt, size, path);
+      const scanned = await scanSlices(
+        owned,
+        path,
+        size,
+        container.slices,
+        chunkBytes,
+        signal,
+      );
+      const current = await recheckPath(path);
+      if (!sameRegularFileState(before, current))
+        throw new RegularFileChangedError(path);
+      await assertPathNodes();
+      return {
+        sha256: scanned.sha256,
+        bytes: size,
+        format: container.format,
+        slices: scanned.slices,
+      };
+    },
+  );
 };
 
 /** Sentence describing the file and sentinel bounds enforced by this reader. */
@@ -175,7 +186,7 @@ export const electronFuseReadLimitation = (): string =>
 
 const readerFor =
   (
-    handle: Awaited<ReturnType<typeof openRegularFile>>,
+    handle: FileHandle,
     size: number,
     path: string,
     signal: AbortSignal | undefined,
@@ -271,7 +282,7 @@ const assertNonOverlappingSlices = (ranges: readonly SliceRange[]): void => {
 };
 
 const scanSlices = async (
-  handle: Awaited<ReturnType<typeof openRegularFile>>,
+  handle: FileHandle,
   path: string,
   size: number,
   ranges: readonly SliceRange[],
@@ -368,7 +379,7 @@ const absorbChunk = (
 };
 
 const parseWire = async (
-  handle: Awaited<ReturnType<typeof openRegularFile>>,
+  handle: FileHandle,
   path: string,
   sentinelOffset: number,
   sliceEnd: number,
@@ -421,7 +432,7 @@ const parseWire = async (
 };
 
 const readExact = async (
-  handle: Awaited<ReturnType<typeof openRegularFile>>,
+  handle: FileHandle,
   path: string,
   offset: number,
   length: number,

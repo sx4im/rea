@@ -1,5 +1,6 @@
 import { readdirSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -12,6 +13,143 @@ import { OwnedStagedOutput } from "../../../src/filesystem/OwnedStagedOutput.js"
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { writeTextParts } from "../../../src/application/JsonFiles.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+
+const allocation = vi.hoisted(() => ({
+  deferred: false,
+  statFailure: false,
+  staged: [] as FileHandle[],
+}));
+
+// FAT and exFAT on macOS report a placeholder file ID for an empty file and
+// assign its cluster-derived ID when the first write allocates storage.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const filesystem = await importOriginal<typeof import("node:fs/promises")>();
+  const { basename, dirname } = await import("node:path");
+  return {
+    ...filesystem,
+    open: async (...args: Parameters<typeof filesystem.open>) => {
+      const handle = await filesystem.open(...args);
+      if (
+        !(allocation.deferred || allocation.statFailure) ||
+        !basename(dirname(String(args[0]))).startsWith(".rea-write-")
+      )
+        return handle;
+      allocation.staged.push(handle);
+      const stat = handle.stat.bind(handle);
+      handle.stat = (async () => {
+        if (allocation.statFailure)
+          throw new Error("injected staged descriptor stat failure");
+        const stats = await stat();
+        if (stats.size === 0) stats.ino = Number.MAX_SAFE_INTEGER;
+        return stats;
+      }) as typeof handle.stat;
+      return handle;
+    },
+  };
+});
+
+it("closes the descriptor and retains staged content when its final identity is unknown", async () => {
+  const root = await createTestTempDirectory("rea-json-identity-unknown-");
+  const resources = new ArtifactResourceScope();
+  const destination = join(root, "unverified.json");
+  allocation.statFailure = true;
+  allocation.staged = [];
+  try {
+    const result = await writeTextParts(
+      ["owned bytes"],
+      destination,
+      false,
+      resources,
+    );
+    if (result.ok) throw new Error("Expected unverified publication failure");
+    expect(allocation.staged).toHaveLength(1);
+    expect(allocation.staged[0]!.fd).toBe(-1);
+    expect(result.error).toBeInstanceOf(EvidenceFileError);
+    expect(result.error.published).toBeUndefined();
+    expect(result.error.cleanupIncomplete).toBe(true);
+    expect(result.error.cause).toMatchObject({
+      outcome: {
+        ok: false,
+        error: { message: "Cannot verify staged file identity" },
+      },
+    });
+    const stage = result.error.cleanupResources[0];
+    if (stage === undefined) throw new Error("Expected retained staging");
+    expect(stage).toContain(".rea-write-");
+    expect(await fs.readFile(join(stage, "content"), "utf8")).toBe(
+      "owned bytes",
+    );
+    await expect(fs.access(destination)).rejects.toThrow();
+    // A closed descriptor cannot re-establish identity, so retry stays incomplete.
+    await expect(resources.close()).rejects.toThrow();
+    expect(await fs.readFile(join(stage, "content"), "utf8")).toBe(
+      "owned bytes",
+    );
+  } finally {
+    allocation.statFailure = false;
+    allocation.staged = [];
+    await resources.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each([false, true])(
+  "publishes when the staged file ID is assigned by its first write (overwrite: %s)",
+  async (overwrite) => {
+    const root = await createTestTempDirectory("rea-json-deferred-id-");
+    const resources = new ArtifactResourceScope();
+    const destination = join(root, "bundle.json");
+    allocation.deferred = true;
+    try {
+      if (overwrite) writeFileSync(destination, "previous");
+      const result = await writeTextParts(
+        ["canonical ", "output"],
+        destination,
+        overwrite,
+        resources,
+      );
+      if (!result.ok) throw result.error;
+      expect(result.value).toEqual({ path: destination, bytes: 16 });
+      expect(await fs.readFile(destination, "utf8")).toBe("canonical output");
+      expect(requireStages(root)).toEqual([]);
+    } finally {
+      allocation.deferred = false;
+      await resources.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("removes cancelled staging after the first write assigned its file ID", async () => {
+  const root = await createTestTempDirectory("rea-json-deferred-cancel-");
+  const resources = new ArtifactResourceScope();
+  const controller = new AbortController();
+  const destination = join(root, "cancelled.json");
+  allocation.deferred = true;
+  try {
+    function* cancelledAfterFirstWrite(): Generator<string> {
+      yield "partial";
+      controller.abort();
+      yield "must not publish";
+    }
+    const result = await writeTextParts(
+      cancelledAfterFirstWrite(),
+      destination,
+      false,
+      resources,
+      { signal: controller.signal, operation: "export_evidence_bundle" },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+    expect(result.error.cleanupIncomplete).toBe(false);
+    await expect(fs.access(destination)).rejects.toThrow();
+    expect(requireStages(root)).toEqual([]);
+  } finally {
+    allocation.deferred = false;
+    await resources.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it("reports committed output when post-publication staging cleanup remains owned", async () => {
   const root = await createTestTempDirectory("rea-json-write-");
@@ -173,7 +311,7 @@ it("retains a failed file close owner and retries before removing its stage", as
     if (closeAttempts === 1) throw new Error("injected close failure");
     await actualClose();
   });
-  await owner.setFile(new OwnedFileHandle(handle));
+  owner.setFile(new OwnedFileHandle(handle));
   const resources = new ArtifactResourceScope();
   const stagedOwner = {
     kind: "staged-output" as const,
@@ -218,7 +356,7 @@ it("retains cleanup when its staging directory was renamed", async () => {
   const path = join(directory, "content");
   const handle = await open(path, "wx", 0o600);
   const owner = await OwnedStagedOutput.create(directory);
-  await owner.setFile(new OwnedFileHandle(handle));
+  owner.setFile(new OwnedFileHandle(handle));
   const resources = new ArtifactResourceScope();
   const stagedOwner = {
     kind: "staged-output" as const,
@@ -249,7 +387,7 @@ it("retains cleanup when owned staged content was renamed", async () => {
   await mkdir(directory);
   const handle = await open(content, "wx", 0o600);
   const owner = await OwnedStagedOutput.create(directory);
-  await owner.setFile(new OwnedFileHandle(handle));
+  owner.setFile(new OwnedFileHandle(handle));
   const resources = new ArtifactResourceScope();
   const stagedOwner = {
     kind: "staged-output" as const,

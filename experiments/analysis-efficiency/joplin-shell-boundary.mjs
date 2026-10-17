@@ -2,8 +2,9 @@
 // Unchanged Joplin ASAR and its shipped welcome note/attachment. The actual
 // resource context menu, bridge and shell call execute; menu automation is explicit.
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { _electron } from "playwright-core";
@@ -39,6 +40,7 @@ const profile = await mkdtemp(
 let application;
 let child;
 let probe;
+let stagedHookHashes;
 const started = performance.now();
 const controller = new AbortController();
 const deadline = setTimeout(
@@ -46,7 +48,39 @@ const deadline = setTimeout(
   45_000,
 );
 
+const verifyHookSources = async (stagedHook) => {
+  const hashes = {};
+  for (const name of [
+    "electron-active-hook.cjs",
+    "electron-active-hook-boundaries.cjs",
+  ]) {
+    const hash = (data) => createHash("sha256").update(data).digest("hex");
+    const actualPath =
+      name === "electron-active-hook.cjs"
+        ? stagedHook
+        : join(dirname(stagedHook), name);
+    const [actual, expected] = await Promise.all([
+      readFile(actualPath).then(hash),
+      readFile(join(runtime, "scripts", name)).then(hash),
+    ]);
+    assert.equal(
+      actual,
+      expected,
+      `The staged ${name} must match the selected runtime source`,
+    );
+    hashes[name] = actual;
+  }
+  return hashes;
+};
+
 const launch = async (options) => {
+  const stagedIndex = options.args.indexOf("-r");
+  assert.notEqual(
+    stagedIndex,
+    -1,
+    "Expected the provider's staged require pair",
+  );
+  stagedHookHashes = await verifyHookSources(options.args[stagedIndex + 1]);
   let launchOptions = options;
   if (values["argv-shim-transport"]) {
     // Explicit test adapter for #2974, not the public provider launch path.
@@ -246,6 +280,7 @@ try {
     JSON.stringify({
       profile,
       runtime,
+      staged_hook_sha256: stagedHookHashes,
       elapsed_ms: performance.now() - started,
       launch_transport: values["argv-shim-transport"]
         ? "controlled-argv-shim"

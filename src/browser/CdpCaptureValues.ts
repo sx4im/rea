@@ -3,6 +3,7 @@ import { BrowserObservationError } from "../domain/browserObservationError.js";
 import type { BrowserObservationOperation } from "../domain/browserObservationErrors.js";
 import { sanitizeBrowserUrl } from "../domain/browserObservation.js";
 import { createWebTextArtifact } from "../domain/webContentArtifact.js";
+import { err, ok, type Result } from "../domain/result.js";
 
 export type UnknownRecord = Readonly<Record<string, unknown>>;
 
@@ -29,6 +30,17 @@ export const cdpStringValue = (value: unknown): string | undefined =>
 
 export const numberValue = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** An omitted resource size is unknown; a supplied invalid size is malformed. */
+export const resourceContentSize = (
+  value: unknown,
+): Result<number | null, { readonly _tag: "InvalidCdpResourceSize" }> => {
+  if (value === undefined) return ok(null);
+  const size = numberValue(value);
+  return size !== undefined && size >= 0
+    ? ok(size)
+    : err({ _tag: "InvalidCdpResourceSize" });
+};
 
 /** Preserve partial script declarations; omitted or invalid fields remain unknown. */
 export const scriptMetadataValues = (

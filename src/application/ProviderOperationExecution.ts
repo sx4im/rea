@@ -7,12 +7,12 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
 } from "../domain/analysisErrorCore.js";
-import { createEvidence, type Evidence } from "../domain/evidence.js";
-import { jsonObjectSchema } from "../domain/jsonValue.js";
+import type { Evidence } from "../domain/evidence.js";
 import { err, ok, type Result } from "../domain/result.js";
-import type {
-  AnalysisExecution,
-  ExecutionOptions,
+import {
+  createAnalysisExecutionEvidence,
+  type AnalysisExecution,
+  type ExecutionOptions,
 } from "./AnalysisProvider.js";
 
 /** Validated caller-selected request carrying its operation input. */
@@ -55,19 +55,11 @@ export const executeProviderOperation = async <
     return err(new AnalysisInputError(operation, { cause: request.error }));
   const executed = await provider.execute(request.data, options);
   if (!executed.ok) return executed;
-  const execution = executed.value;
-  const evidence = createEvidence(
-    execution.subject ?? undefined,
-    execution.provider,
-    {
-      operation,
-      parameters: jsonObjectSchema.parse(request.data.input),
-      result: execution.result,
-      rawResult: execution.rawResult,
-      limitations: execution.limitations,
-      locations: execution.locations,
-      confidence,
-    },
+  const evidence = createAnalysisExecutionEvidence(
+    operation,
+    request.data.input,
+    executed.value,
+    confidence,
   );
   return completeProviderEvidence(evidence, options?.signal);
 };

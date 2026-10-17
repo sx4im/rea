@@ -29,9 +29,11 @@ const INSTALL = "/opt/ghidra_12.1.4_PUBLIC";
 export const connectGhidraMcp = async (
   name: string,
   execute?: ReturnType<GhidraProviderClientFactory>["callTool"],
-  observations: {
+  fixture: {
     readonly targetPath?: string;
     readonly pdb?: GhidraSessionInfo["pdb"];
+    readonly sessionTarget?: GhidraSessionInfo["target"];
+    readonly attestDosTargetSnapshot?: ReturnType<GhidraProviderClientFactory>["attestDosTargetSnapshot"];
   } = {},
 ) => {
   const calls: GhidraOperation[] = [];
@@ -40,7 +42,10 @@ export const connectGhidraMcp = async (
       Promise.resolve(
         ok({
           ...sessionInfo(options.profileDigest, options.targetSha256),
-          ...(observations.pdb === undefined ? {} : { pdb: observations.pdb }),
+          ...(fixture.sessionTarget === undefined
+            ? {}
+            : { target: fixture.sessionTarget }),
+          ...(fixture.pdb === undefined ? {} : { pdb: fixture.pdb }),
         }),
       ),
     callTool: (operation, input, options) => {
@@ -49,6 +54,9 @@ export const connectGhidraMcp = async (
       return Promise.resolve(ok(resultFor(operation, input)));
     },
     close: () => Promise.resolve(ok(null)),
+    ...(fixture.attestDosTargetSnapshot === undefined
+      ? {}
+      : { attestDosTargetSnapshot: fixture.attestDosTargetSnapshot }),
   });
   const config = parseConfig({ GHIDRA_INSTALL_DIR: INSTALL });
   if (!config.ok) throw config.error;
@@ -78,7 +86,7 @@ export const connectGhidraMcp = async (
     await mcp.connect(clientTransport);
     const opened = await mcp.callTool({
       name: "open_binary",
-      arguments: { path: observations.targetPath ?? process.execPath },
+      arguments: { path: fixture.targetPath ?? process.execPath },
     });
     if (opened.isError === true)
       throw new Error(
@@ -144,6 +152,15 @@ type GhidraResultBuilder = (
 ) => JsonValue;
 
 const resultBuilders = new Map<GhidraOperation, GhidraResultBuilder>([
+  [
+    "read_binary_inventory_summary",
+    () => ({
+      document: "fixture",
+      segments: resultFor("list_segments", {}),
+      procedure_count: 1,
+      string_count: 2,
+    }),
+  ],
   ["list_documents", () => ["fixture"]],
   [
     "list_procedures",

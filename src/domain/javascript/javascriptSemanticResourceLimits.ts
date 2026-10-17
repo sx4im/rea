@@ -7,7 +7,7 @@ import type {
 export const SEMANTIC_PRIMITIVE_CANDIDATE_LIMIT = 256;
 /** Maximum active expression nesting during inert semantic evaluation. */
 export const SEMANTIC_EXPRESSION_DEPTH_LIMIT = 256;
-/** Distinct getter, receiver and path states retained in one precise query. */
+/** Getter jobs and local result work retained in one precise query. */
 export const SEMANTIC_GETTER_EXPANSION_LIMIT = 512;
 /** Bound normalized strings and transient keys independently of transport limits. */
 export const SEMANTIC_PRIMITIVE_JSON_BYTES_LIMIT = 1_048_576;
@@ -20,7 +20,7 @@ const RESOURCE_LIMIT_REASON: Record<JavaScriptSemanticResourceLimit, string> = {
   "expression-depth":
     "Semantic expression depth budget exceeded (maximum 256 nested expressions).",
   "getter-expansion":
-    "Getter expansion was conservatively bounded (maximum 512 distinct states or a growing receiver cycle).",
+    "Getter expansion was conservatively bounded (maximum 512 scheduled states or a growing receiver cycle).",
 };
 
 /** Check UTF-16 length against worst-case JSON escaping without flattening. */

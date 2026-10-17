@@ -1,3 +1,4 @@
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
 import type { BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -278,7 +279,7 @@ const readStableFileEntry = async (
       retain(cause.owner);
       cause = cause.cause;
     }
-    if (isAborted(signal))
+    if (regularFileCancellation(cause) !== undefined || isAborted(signal))
       return entryFailure(
         path,
         "file",

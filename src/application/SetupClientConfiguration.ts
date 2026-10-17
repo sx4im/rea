@@ -74,6 +74,8 @@ export class ClientConfigurationCleanupRollbackFailure extends RegularFileCleanu
         [failure.cleanupCause, new Error(configurationFailure.failure.detail)],
         `Configuration readback cleanup and rollback failed: ${configurationFailure.failure.path}`,
       ),
+      failure.retention,
+      failure.completionCancellation,
     );
   }
 }

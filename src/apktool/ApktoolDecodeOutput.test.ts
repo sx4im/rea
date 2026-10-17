@@ -127,6 +127,22 @@ describe("parseManifestPackage", () => {
     expect(parseManifestPackage("<manifest>\n</manifest>\n")).toBeNull();
   });
 
+  it("reads the package when unrelated manifest text contains U+FFFD", () => {
+    expect(
+      parseManifestPackage(
+        '<manifest package="org.rea.app"><application label="\uFFFD"/></manifest>',
+      ),
+    ).toBe("org.rea.app");
+  });
+
+  it("still rejects malformed attributes alongside U+FFFD", () => {
+    expect(() =>
+      parseManifestPackage(
+        '<manifest package=org.rea.app><application label="\uFFFD"/></manifest>',
+      ),
+    ).toThrow(/AndroidManifest.xml is not well-formed XML/u);
+  });
+
   it("rejects a well-formed document with the wrong root element", () => {
     expect(() => parseManifestPackage("<resources/>")).toThrowError(
       new TypeError("AndroidManifest.xml root must be <manifest>"),
@@ -170,6 +186,30 @@ describe("parseDecodedStrings", () => {
     expect(parseDecodedStrings(stringsXml).entries[0]?.value).toBe(
       "a &amp; b &lt;c&gt;",
     );
+  });
+
+  it("preserves literal U+FFFD and unaffected sibling strings", () => {
+    expect(
+      parseDecodedStrings(
+        '<resources><string name="good">Hello</string><string name="edge">\uFFFD</string></resources>',
+      ),
+    ).toEqual({
+      entries: [
+        { name: "good", value: "Hello" },
+        { name: "edge", value: "\uFFFD" },
+      ],
+      unparsedCount: 0,
+    });
+  });
+
+  it.each([
+    "<resources><string name=unquoted>\uFFFD</string></resources>",
+    '<resources><string name="broken">\uFFFD</resources>',
+  ])("still rejects malformed XML containing U+FFFD: %s", (xml) => {
+    expect(parseDecodedStrings(xml)).toEqual({
+      entries: [],
+      unparsedCount: 1,
+    });
   });
 
   it("keeps empty, self-closing, and reordered string attributes", () => {

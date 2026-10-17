@@ -47,9 +47,11 @@ export class HopperTimeoutError extends HopperError {
       ? "launch"
       : "analysis",
     readonly launcherOutcome?: HopperLauncherOutcome,
+    options: AnalysisErrorOptions = {},
   ) {
     super(
       `Hopper ${operation === undefined ? "startup" : operation} timed out after ${String(timeoutMs)}ms`,
+      options,
     );
   }
 }

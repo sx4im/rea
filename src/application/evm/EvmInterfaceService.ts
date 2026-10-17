@@ -8,7 +8,8 @@ import {
   AnalysisInputError,
   AnalysisOutputError,
 } from "../../domain/analysisErrorCore.js";
-import { createEvidence, type Evidence } from "../../domain/evidence.js";
+import type { Evidence } from "../../domain/evidence.js";
+import { evmInterfaceEvidence } from "./EvmInterfaceEvidence.js";
 import {
   inspectEvmInterfaceInputSchema,
   evmInterfaceSchema,
@@ -36,7 +37,9 @@ export class EvmInterfaceService {
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
     if (options?.signal?.aborted)
-      return err(new AnalysisCancelledError(OPERATION));
+      return err(
+        new AnalysisCancelledError(OPERATION, { cause: options.signal.reason }),
+      );
     const input = inspectEvmInterfaceInputSchema.safeParse(rawInput);
     if (!input.success)
       return err(
@@ -78,17 +81,7 @@ export class EvmInterfaceService {
         ),
       );
     return completeProviderEvidence(
-      createEvidence(execution.subject, execution.provider, {
-        operation: OPERATION,
-        parameters: input.data,
-        result: report.data,
-        ...(execution.rawResult === null
-          ? {}
-          : { rawResult: execution.rawResult }),
-        confidence: "inferred",
-        locations: execution.locations,
-        limitations: execution.limitations,
-      }),
+      evmInterfaceEvidence(input.data, execution),
       options?.signal,
       outputOptions?.capturedOutput,
     );

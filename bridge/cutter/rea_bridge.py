@@ -783,14 +783,22 @@ def _within_response_limit(value: Any) -> bool:
         current = pending.pop()
         if isinstance(current, str):
             size += 2
+            if len(current) > MAX_FRAME_BYTES - size:
+                return False
             if current.isascii():
                 size += len(current)
-                size += current.count('"') + current.count("\\")
-                size += sum(5 for character in current if ord(character) < 0x20)
             else:
-                size += 4 * len(current)
-                size += current.count('"') + current.count("\\")
-                size += sum(5 for character in current if ord(character) < 0x20)
+                # Count UTF-8 bytes without allocating a copy of the whole output.
+                try:
+                    size += sum(
+                        len(current[start:start + 65536].encode("utf-8"))
+                        for start in range(0, len(current), 65536)
+                    )
+                except UnicodeEncodeError:
+                    # Unencodable output also needs the signed omission fallback.
+                    return False
+            size += current.count('"') + current.count("\\")
+            size += sum(5 for character in current if ord(character) < 0x20)
         elif isinstance(current, dict):
             identity = id(current)
             if identity in seen:

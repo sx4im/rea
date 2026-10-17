@@ -15,6 +15,7 @@ import type {
   JavaScriptArtifactFile,
 } from "../../domain/javascript/javascriptArtifactFiles.js";
 import type { JavaScriptArtifactGraphAccumulator } from "./JavaScriptArtifactGraphAccumulator.js";
+import { isSkippedJavaScriptAnalysis } from "./JavaScriptArtifactAnalysisTypes.js";
 import {
   addArtifactContainsEdge,
   addUnavailableStaticParseScope,
@@ -145,6 +146,7 @@ export const addJavaScriptArtifactFiles = (
       file,
       analyzed.javascript,
       jsonValue,
+      isSkippedJavaScriptAnalysis(analyzed),
     );
     if (
       analyzed.application_projection_failure !== undefined &&
@@ -553,6 +555,7 @@ const createFileTarget = (
   file: JavaScriptArtifactFile,
   javascript: JavaScriptModuleArtifactAnalysis["files"][number]["javascript"],
   json: JavaScriptModuleArtifactAnalysis["json_modules"][number] | undefined,
+  skipped: boolean,
 ): ApplicationNode => {
   const kind = artifactFileNodeKind(file.kind);
   return context.accumulator.addNode({
@@ -572,7 +575,8 @@ const createFileTarget = (
           unpacked: file.unpacked,
           file_kind: file.kind,
           text_status: file.text.included ? "included" : file.text.reason,
-          parse_status: javascript?.parse_status ?? null,
+          parse_status:
+            javascript?.parse_status ?? (skipped ? "skipped" : null),
           json_parse_status: json?.status ?? null,
           json_top_level_keys: json?.top_level_keys ?? [],
           omitted_json_top_level_keys: json?.omitted_top_level_keys ?? 0,

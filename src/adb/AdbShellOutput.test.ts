@@ -1,6 +1,204 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAmStartOutput, parseWmDensityOutput } from "./AdbShellOutput.js";
+import {
+  parseAmStartOutput,
+  parseDumpsysPackageOutput,
+  parseWmDensityOutput,
+  parseWindowFocusOutput,
+} from "./AdbShellOutput.js";
+
+describe("parseWindowFocusOutput display contexts", () => {
+  it.each([false, true])(
+    "retains both display owners independent of block order: %s",
+    (reverse) => {
+      const inactive =
+        "  Display: mDisplayId=3 rootTasks=0\n  mCurrentFocus=null\n  mFocusedApp=null\n";
+      const active =
+        "  Display: mDisplayId=0 rootTasks=12\n  mCurrentFocus=Window{active}\n  mFocusedApp=ActivityRecord{active}\n";
+      const result = parseWindowFocusOutput(
+        reverse ? active + inactive : inactive + active,
+      );
+      expect(result).toMatchObject({
+        focused_window: null,
+        focused_app: null,
+        focus_summary: "ambiguous",
+        focus_contexts: expect.arrayContaining([
+          {
+            scope: "display",
+            display_id: "3",
+            header_line: "  Display: mDisplayId=3 rootTasks=0",
+            declarations: [
+              {
+                field: "mCurrentFocus",
+                value: null,
+                raw_line: "  mCurrentFocus=null",
+              },
+              {
+                field: "mFocusedApp",
+                value: null,
+                raw_line: "  mFocusedApp=null",
+              },
+            ],
+          },
+          {
+            scope: "display",
+            display_id: "0",
+            header_line: "  Display: mDisplayId=0 rootTasks=12",
+            declarations: [
+              {
+                field: "mCurrentFocus",
+                value: "Window{active}",
+                raw_line: "  mCurrentFocus=Window{active}",
+              },
+              {
+                field: "mFocusedApp",
+                value: "ActivityRecord{active}",
+                raw_line: "  mFocusedApp=ActivityRecord{active}",
+              },
+            ],
+          },
+        ]),
+      });
+    },
+  );
+
+  it("does not pair declarations from different displays", () => {
+    expect(
+      parseWindowFocusOutput(
+        "Display: mDisplayId=0\nmCurrentFocus=Window{one}\nDisplay: mDisplayId=1\nmFocusedApp=ActivityRecord{two}\n",
+      ),
+    ).toMatchObject({
+      focus_summary: "ambiguous",
+      focused_window: null,
+      focused_app: null,
+      focus_contexts: [
+        {
+          display_id: "0",
+          declarations: [{ field: "mCurrentFocus", value: "Window{one}" }],
+        },
+        {
+          display_id: "1",
+          declarations: [
+            { field: "mFocusedApp", value: "ActivityRecord{two}" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("retains an unknown display identity and missing fields without borrowing its neighbor", () => {
+    expect(
+      parseWindowFocusOutput(
+        "Display: vendor-format\nmCurrentFocus=null\nDisplay: mDisplayId=0\n",
+      ),
+    ).toMatchObject({
+      focus_summary: "ambiguous",
+      focus_contexts: [
+        {
+          scope: "display",
+          display_id: null,
+          header_line: "Display: vendor-format",
+          declarations: [{ field: "mCurrentFocus", value: null }],
+        },
+        { scope: "display", display_id: "0", declarations: [] },
+      ],
+    });
+  });
+});
+
+describe("parseWindowFocusOutput declaration presence", () => {
+  it("separates missing declarations from explicit absence and retains source lines", () => {
+    expect(parseWindowFocusOutput("no declarations\n")).toEqual({
+      focused_window: null,
+      focused_app: null,
+      focus_summary: "unavailable",
+      focus_contexts: [],
+      observed_lines: [],
+    });
+    expect(
+      parseWindowFocusOutput("  mCurrentFocus=null\nmFocusedApp=null\n"),
+    ).toEqual({
+      focused_window: null,
+      focused_app: null,
+      focus_summary: "single_context",
+      focus_contexts: [
+        {
+          scope: "unscoped",
+          display_id: null,
+          header_line: null,
+          declarations: [
+            {
+              field: "mCurrentFocus",
+              value: null,
+              raw_line: "  mCurrentFocus=null",
+            },
+            { field: "mFocusedApp", value: null, raw_line: "mFocusedApp=null" },
+          ],
+        },
+      ],
+      observed_lines: ["  mCurrentFocus=null", "mFocusedApp=null"],
+    });
+  });
+
+  it("retains repeated declarations without choosing one or erasing explicit absence", () => {
+    expect(
+      parseWindowFocusOutput(
+        "mCurrentFocus=null\nmCurrentFocus=Window{later}\nmFocusedApp=ActivityRecord{current}\n",
+      ),
+    ).toMatchObject({
+      focus_summary: "ambiguous",
+      focused_window: null,
+      focused_app: null,
+      focus_contexts: [
+        {
+          declarations: [
+            { field: "mCurrentFocus", value: null },
+            { field: "mCurrentFocus", value: "Window{later}" },
+            { field: "mFocusedApp", value: "ActivityRecord{current}" },
+          ],
+        },
+      ],
+      observed_lines: [
+        "mCurrentFocus=null",
+        "mCurrentFocus=Window{later}",
+        "mFocusedApp=ActivityRecord{current}",
+      ],
+    });
+  });
+});
+
+describe("parseDumpsysPackageOutput", () => {
+  it("reports unknown requested permissions when the package is null", () => {
+    expect(
+      parseDumpsysPackageOutput("Package [com.example] (abcdef):\n  pkg=null\n")
+        .requestedPermissions,
+    ).toBeNull();
+  });
+
+  it("reports unknown when package state and the permission section are absent", () => {
+    expect(
+      parseDumpsysPackageOutput(
+        "Package [com.example] (abcdef):\n  versionCode=45\n",
+      ).requestedPermissions,
+    ).toBeNull();
+  });
+
+  it("reports zero only for a confirmed loaded package without the section", () => {
+    expect(
+      parseDumpsysPackageOutput(
+        "Package [com.example] (abcdef):\n  pkg=Package{abcdef com.example}\n",
+      ).requestedPermissions,
+    ).toBe(0);
+  });
+
+  it("counts listed permissions when the section is available", () => {
+    expect(
+      parseDumpsysPackageOutput(
+        "Package [com.example] (abcdef):\n  requested permissions:\n    android.permission.INTERNET\n",
+      ).requestedPermissions,
+    ).toBe(1);
+  });
+});
 
 describe("parseWmDensityOutput", () => {
   it("reads labeled physical and override densities", () => {

@@ -1,5 +1,8 @@
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
-import { AnalysisError } from "../domain/analysisErrorBase.js";
+import {
+  AnalysisError,
+  type AnalysisPartialObservation,
+} from "../domain/analysisErrorBase.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { DarwinProcessOwnershipInspectionError } from "../process/DarwinProcessRunTokenReader.js";
 import { boundedUtf8Text } from "../process/boundedUtf8Text.js";
@@ -25,9 +28,14 @@ export type GhidraSessionFailureKind =
   | "remote"
   | "analysis_timeout";
 
+/** Message of the failure raised when the provider startup deadline elapses. */
+export const GHIDRA_STARTUP_DEADLINE_ELAPSED =
+  "Ghidra startup deadline elapsed";
+
 /** Additional structured context for a Ghidra session failure. */
 export interface GhidraSessionErrorOptions extends ErrorOptions {
   readonly cancellation?: { readonly reason: unknown };
+  readonly partialObservation?: AnalysisPartialObservation;
   readonly timeoutMs?: number;
   readonly remoteCode?: string;
   readonly cleanupFailure?: AnalysisError;
@@ -40,6 +48,7 @@ export class GhidraSessionError extends Error {
   readonly remoteCode: string | undefined;
   readonly cleanupFailure: AnalysisError | undefined;
   readonly cancellation: { readonly reason: unknown } | undefined;
+  readonly partialObservation: AnalysisPartialObservation | undefined;
 
   constructor(
     readonly kind: GhidraSessionFailureKind,
@@ -54,6 +63,7 @@ export class GhidraSessionError extends Error {
     this.remoteCode = options.remoteCode;
     this.cleanupFailure = options.cleanupFailure;
     this.cancellation = options.cancellation;
+    this.partialObservation = options.partialObservation;
   }
 
   /** Refresh diagnostics without discarding owned failure or cleanup facts. */
@@ -79,10 +89,23 @@ export class GhidraSessionError extends Error {
     return this.#copy(diagnostics, combined);
   }
 
+  /** Retain caller-safe completed facts without serializing snapshot byte buffers. */
+  withPartialObservation(
+    observation: AnalysisPartialObservation,
+  ): GhidraSessionError {
+    return this.#copy(
+      this.diagnostics,
+      this.cleanupFailure,
+      this.message,
+      observation,
+    );
+  }
+
   #copy(
     diagnostics: Readonly<Record<string, JsonValue>>,
     cleanupFailure: AnalysisError | undefined,
     message = this.message,
+    partialObservation = this.partialObservation,
   ): GhidraSessionError {
     return new GhidraSessionError(this.kind, message, diagnostics, {
       ...(Object.hasOwn(this, "cause") ? { cause: this.cause } : {}),
@@ -92,6 +115,7 @@ export class GhidraSessionError extends Error {
       ...(this.timeoutMs === undefined ? {} : { timeoutMs: this.timeoutMs }),
       ...(this.remoteCode === undefined ? {} : { remoteCode: this.remoteCode }),
       ...(cleanupFailure === undefined ? {} : { cleanupFailure }),
+      ...(partialObservation === undefined ? {} : { partialObservation }),
     });
   }
 }

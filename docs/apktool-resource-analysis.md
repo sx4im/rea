@@ -52,6 +52,8 @@ select Android's `values-pt-rBR`; Android qualifiers such as `pt-rBR` and
 
 - **An owned APK snapshot is digested and decoded.** `target.sha256` and
   `target.bytes` bind the observation to the exact APK that was decoded.
+  The Evidence subject carries the same snapshot digest and caller-selected
+  path, including when the original file changes during decoding.
 - **Metadata comes from apktool.yml as apktool printed it.** Version codes
   keep their own spelling (`'7'` versus `7`); `package_name` is read from
   the decoded manifest, not inferred.

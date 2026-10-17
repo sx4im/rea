@@ -14,8 +14,8 @@ import { assertArtifactReadActive } from "../../artifacts/ArtifactFileOperation.
 import {
   readGhidraProfileArtifact,
   writeGhidraProfileArtifact,
-  ghidraProfileArtifactError,
-} from "../GhidraProfileArtifacts.js";
+  ghidraFileFailure,
+} from "../GhidraFileArtifacts.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import { jsonObjectSchema } from "../../domain/jsonValue.js";
 import { err, ok, type Result } from "../../domain/result.js";
@@ -125,7 +125,7 @@ export const resolveGhidraExtensions = async (
           });
         } catch (cause: unknown) {
           return err(
-            ghidraProfileArtifactError(cause, "resolve_analysis_profile", {
+            ghidraFileFailure(cause, "resolve_analysis_profile", {
               extension: adapter.id,
               path: configured,
             }),
@@ -139,7 +139,7 @@ export const resolveGhidraExtensions = async (
       return ok(extensions);
     })
     .catch((cause: unknown) =>
-      err(ghidraProfileArtifactError(cause, "resolve_analysis_profile")),
+      err(ghidraFileFailure(cause, "resolve_analysis_profile")),
     );
 
 /** Require explicit local configuration before admitting executable code from a profile. */
@@ -239,7 +239,7 @@ export const snapshotGhidraExtensions = async (
       return result;
     })
     .catch((cause: unknown) => {
-      throw ghidraProfileArtifactError(cause, "open_binary");
+      throw ghidraFileFailure(cause, "open_binary");
     });
 
 /** Require every configured producer result to match its artifact and registered ABI. */

@@ -1,12 +1,8 @@
-import {
-  DOMParser,
-  normalizeLineEndings,
-  type Document,
-  type Node,
-} from "@xmldom/xmldom";
+import { normalizeLineEndings, type Document, type Node } from "@xmldom/xmldom";
 import { parse, parseOpenStep } from "plist";
 
 import { MAX_PLIST_DEPTH } from "./apple/plistValue.js";
+import { parseXmlDocument } from "./xmlDocument.js";
 
 /** The dictionary key REA results cannot carry: validation strips it. */
 const PROTOTYPE_KEY = "__proto__";
@@ -79,7 +75,9 @@ export const decodeXmlText = (text: string): string =>
             : undefined;
       if (codePoint !== undefined)
         return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-      return (name === undefined ? undefined : XML_ENTITIES[name]) ?? entity;
+      return name !== undefined && Object.hasOwn(XML_ENTITIES, name)
+        ? XML_ENTITIES[name]!
+        : entity;
     },
   );
 
@@ -108,10 +106,14 @@ export const parseXmlPropertyList = (
   // Preserve character references in the source: serializing a DOM would turn
   // e.g. an encoded carriage return into a literal newline on the second parse.
   const normalized = normalizeLineEndings(text);
-  // The pinned XML parser is iterative. Reuse its document for the depth
-  // preflight and key lookup so quoted attributes and declarations have the
-  // same meaning at both boundaries, before plist's recursive value decode.
-  const document = new DOMParser().parseFromString(normalized, "text/xml");
+  // Validate before plist's recovering XML decoder can turn malformed source
+  // into observed values. Reuse the validated DOM for depth and key ownership.
+  const parsed = parseXmlDocument(normalized, {
+    doctype: "allow",
+    lineEndings: "preserve",
+  });
+  if (!parsed.ok) throw parsed.error;
+  const document = parsed.value;
   assertXmlPlistDepthWithinLimit(document);
   const { substituted, placeholder } = substitutePrototypeKeys(
     normalized,

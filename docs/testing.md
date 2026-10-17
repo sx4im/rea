@@ -503,7 +503,7 @@ costs. Its queue, execution, and failures are independent of the required gate
 and publication. CPU time and peak process-family memory are not measured by this API.
 
 The build job saves portable Turbo outputs across runs. Eight Linux real-system
-lanes restore this cache without waiting for the build job. The shared action
+lanes reuse its current-run artifact; standalone dispatches restore the cross-run cache. The shared action
 derives its key from `test:prepare --dry=json` task hashes, runner OS and
 architecture, `.npmrc`, `.nvmrc`, and the lockfile; test-only changes can reuse compiled outputs. Every
 build and verification command still runs, so Turbo checks task inputs and
@@ -513,7 +513,10 @@ that generator's entry. Native outputs are not stored in this cache.
 
 Native package jobs, the Windows curated lane, and the Apple artifact lane reuse
 the same workflow's Turbo cache for portable compiled JavaScript, skills, and
-catalogs. The Windows lane relies on the Linux static job for typechecking. They retain the normal build and prepack
+catalogs. The producer stages only the completed `test:prepare` task hashes into
+`.cache/ci-build-cache/`, preserving their archives, metadata, and available manifests.
+Missing required entries fail publication; older cross-run entries stay in the
+original cache. The Windows lane relies on the Linux static job for typechecking. They retain the normal build and prepack
 commands, which restore matching outputs or rebuild on a cache miss. Native
 artifacts, dependency installs, package archives, and runtime verification remain
 host-local. Keep platform-dependent outputs out of this shared cache.

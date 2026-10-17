@@ -1,13 +1,15 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { AdbProvider } from "../../../../src/adb/AdbProvider.js";
+import * as regularFile from "../../../../src/filesystem/RegularFile.js";
 import { OwnedFileHandle } from "../../../../src/filesystem/OwnedFileHandle.js";
 import {
   execFileBytes,
   execFileOutput,
 } from "../../../../src/process/ExecFileOutput.js";
+import { AnalysisCancelledError } from "../../../../src/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
@@ -76,7 +78,7 @@ const fixture = async () => {
   return { root, provider, failFirstClose };
 };
 
-test.each([
+const digestCases = [
   {
     label: "single-file pull",
     retainedPath: (root: string) => join(root, "payload.bin"),
@@ -122,7 +124,9 @@ test.each([
     }),
     expected: { bytes: 12, serial: "device", sha256: expect.any(String) },
   },
-])(
+] as const;
+
+test.each(digestCases)(
   "preserves the linked hash cleanup error through $label",
   async ({ request, expected, retainedPath }) => {
     const f = await fixture();
@@ -150,3 +154,142 @@ test.each([
     );
   },
 );
+
+const errorChainSome = (
+  error: unknown,
+  predicate: (error: unknown) => boolean,
+): boolean => {
+  if (predicate(error)) return true;
+  if (!(error instanceof Error)) return false;
+  return (
+    errorChainSome(error.cause, predicate) ||
+    (error instanceof AggregateError &&
+      error.errors.some((child: unknown) => errorChainSome(child, predicate)))
+  );
+};
+
+for (const closeFails of [false, true]) {
+  test.each(digestCases)(
+    `preserves a read failure through $label when close aborts (close fails: ${String(closeFails)})`,
+    async ({ request, retainedPath }) => {
+      const f = await fixture();
+      const path = retainedPath(f.root);
+      const controller = new AbortController();
+      const primary = Object.assign(
+        new Error("injected physical digest read EIO"),
+        { code: "EIO" },
+      );
+      const nativeOpen = regularFile.openRegularFile;
+      let opened: FileHandle | undefined;
+      vi.spyOn(regularFile, "openRegularFile").mockImplementation(
+        async (selected, options) => {
+          const file = await nativeOpen(selected, options);
+          if (selected === path) {
+            opened = file;
+            vi.spyOn(file, "read").mockRejectedValueOnce(primary);
+          }
+          return file;
+        },
+      );
+      const nativeClose = OwnedFileHandle.prototype.close;
+      let allowClose = !closeFails;
+      let owner: OwnedFileHandle | undefined;
+      vi.spyOn(OwnedFileHandle.prototype, "close").mockImplementation(
+        async function (this: OwnedFileHandle) {
+          if (this.handle === opened) {
+            owner = this;
+            controller.abort("cancelled after the physical failure");
+            if (!allowClose) throw new Error("digest close remains blocked");
+          }
+          return nativeClose.call(this);
+        },
+      );
+      try {
+        const result = await f.provider.execute(request(f.root), {
+          signal: controller.signal,
+        });
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("Expected digest read failure");
+        expect(projectAnalysisError(result.error).code).not.toBe("cancelled");
+        expect(
+          errorChainSome(
+            result.error,
+            (cause) => cause instanceof AnalysisCancelledError,
+          ),
+        ).toBe(false);
+        expect(errorChainSome(result.error, (cause) => cause === primary)).toBe(
+          true,
+        );
+        if (closeFails) expect(result.error.cleanupIncomplete).toBe(true);
+        allowClose = true;
+        await f.provider.close();
+        expect(owner?.handle.fd).toBe(-1);
+        expect(result.error.cleanupIncomplete).toBe(false);
+      } finally {
+        allowClose = true;
+        await f.provider.close();
+        if (owner !== undefined) await nativeClose.call(owner);
+      }
+    },
+  );
+}
+
+for (const closeFails of [false, true]) {
+  test.each(digestCases)(
+    `retains exact cancellation and completed digest through $label (close fails: ${String(closeFails)})`,
+    async ({ request, retainedPath }) => {
+      const f = await fixture();
+      const path = retainedPath(f.root);
+      const controller = new AbortController();
+      const reason = null;
+      const nativeOpen = regularFile.openRegularFile;
+      let opened: FileHandle | undefined;
+      vi.spyOn(regularFile, "openRegularFile").mockImplementation(
+        async (selected, options) => {
+          const handle = await nativeOpen(selected, options);
+          if (selected === path) opened = handle;
+          return handle;
+        },
+      );
+      const nativeClose = OwnedFileHandle.prototype.close;
+      let allowClose = !closeFails;
+      vi.spyOn(OwnedFileHandle.prototype, "close").mockImplementation(
+        async function (this: OwnedFileHandle) {
+          if (this.handle === opened) {
+            controller.abort(reason);
+            if (!allowClose)
+              throw new Error("digest close remains unavailable");
+          }
+          await nativeClose.call(this);
+        },
+      );
+      try {
+        const result = await f.provider.execute(request(f.root), {
+          signal: controller.signal,
+        });
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("Expected completion cancellation");
+        expect(projectAnalysisError(result.error).code).toBe(
+          closeFails ? "cleanup_incomplete" : "cancelled",
+        );
+        expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+        expect(result.error.cause).toBe(reason);
+        expect(
+          JSON.stringify(
+            projectAnalysisError(result.error).details?.partial_observation,
+          ),
+        ).toContain('"sha256"');
+        expect(result.error.cleanupIncomplete).toBe(closeFails);
+        allowClose = true;
+        await f.provider.close();
+        expect(opened?.fd).toBe(-1);
+        expect(result.error.cleanupIncomplete).toBe(false);
+      } finally {
+        allowClose = true;
+        await f.provider.close();
+        if (opened !== undefined && opened.fd >= 0)
+          await nativeClose.call(new OwnedFileHandle(opened));
+      }
+    },
+  );
+}

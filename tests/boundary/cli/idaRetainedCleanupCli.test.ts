@@ -67,7 +67,10 @@ describe("headless IDA timeout through the one-shot CLI", () => {
         details: {
           cleanup: "incomplete",
           execution_failure: "provider_timeout",
-          operation: "idb_open",
+          operation: "procedure_pseudo_code",
+          diagnostics: {
+            startup_operation: "idb_open",
+          },
           timeout_ms: 500,
           resources: [expect.stringContaining(workspaceRoot)],
           cleanup_error: {

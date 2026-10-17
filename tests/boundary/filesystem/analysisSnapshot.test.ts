@@ -107,7 +107,7 @@ describe("analysis snapshots: persistence", () => {
     expect(
       parseAnalysisSnapshot(JSON.parse(await readFile(path, "utf8"))),
     ).toEqual(snapshotFixture());
-    expect(session.status()).toMatchObject({
+    expect(await session.status()).toMatchObject({
       open: false,
       cleanup_pending: true,
     });
@@ -115,11 +115,11 @@ describe("analysis snapshots: persistence", () => {
       ok: false,
       error: { cleanupIncomplete: true },
     });
-    expect(session.status()).toMatchObject({ cleanup_pending: true });
+    expect(await session.status()).toMatchObject({ cleanup_pending: true });
 
     close.mockRestore();
     expect(await session.close()).toEqual({ ok: true, value: null });
-    expect(session.status()).toMatchObject({ cleanup_pending: false });
+    expect(await session.status()).toMatchObject({ cleanup_pending: false });
   });
 
   it("writes canonical private v2 JSON and rejects changed query identity", async () => {

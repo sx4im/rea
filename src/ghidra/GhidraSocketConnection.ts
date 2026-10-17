@@ -4,6 +4,7 @@ import { createConnection, type Socket } from "node:net";
 import { err, ok, type Result } from "../domain/result.js";
 import type { ProviderStartupDeadline } from "../process/ProviderDeadline.js";
 import {
+  GHIDRA_STARTUP_DEADLINE_ELAPSED,
   GhidraSessionError,
   type GhidraSessionFailureFactory,
 } from "./GhidraSessionError.js";
@@ -95,7 +96,7 @@ export const connectGhidraSocket = async (
       return err(interruptionFailure(options));
   }
   return err(
-    options.failure("timeout", "Ghidra startup deadline elapsed", undefined, {
+    options.failure("timeout", GHIDRA_STARTUP_DEADLINE_ELAPSED, undefined, {
       timeoutMs: options.startupTimeoutMs,
     }),
   );
@@ -161,7 +162,7 @@ const interruptionFailure = (
       ? options.failure("cancelled", "Ghidra startup was cancelled", cause, {
           cancellation: { reason: options.deadline.signal.reason },
         })
-      : options.failure("timeout", "Ghidra startup deadline elapsed", cause, {
+      : options.failure("timeout", GHIDRA_STARTUP_DEADLINE_ELAPSED, cause, {
           timeoutMs: options.startupTimeoutMs,
         });
   return cause?.cleanupFailure === undefined

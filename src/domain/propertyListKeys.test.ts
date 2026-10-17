@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "plist";
 
-import { omitPrototypeKeys, parseXmlPropertyList } from "./propertyListKeys.js";
+import {
+  decodeXmlText,
+  omitPrototypeKeys,
+  parseXmlPropertyList,
+} from "./propertyListKeys.js";
+
+it("preserves unknown named entities that collide with object prototype properties", () => {
+  expect(
+    decodeXmlText("&constructor; &toString; &valueOf; &hasOwnProperty;"),
+  ).toBe("&constructor; &toString; &valueOf; &hasOwnProperty;");
+  expect(decodeXmlText("&amp;&lt;&gt;&quot;&apos;&#65;&#x42;")).toBe(
+    "&<>\"'AB",
+  );
+});
 
 const plist = (body: string) =>
   `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">${body}</plist>`;

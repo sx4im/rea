@@ -14,6 +14,12 @@ import { createServer } from "../../../src/server/createServer.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { expandToolAvailability } from "../../../src/contracts/toolOutputSchemaPrimitives.js";
 
+import { JebProvider } from "../../../src/jeb/JebProvider.js";
+import {
+  startJebMcpFixture,
+  jebPrimaryResponses,
+} from "../../fixtures/jebMcp.js";
+
 const identity = { id: "jeb", name: "JEB", version: "5.48.0" } as const;
 
 it("discovers current JEB operation support and recovery through binary_session", async () => {
@@ -289,3 +295,99 @@ it("keeps the MCP server usable when REA_JEB_MCP_URL is invalid", async () => {
     },
   });
 });
+
+it.each(
+  [
+    { operation: "list_jeb_units", tool: "list_units", input: { count: 2 } },
+    {
+      operation: "decompile_jeb_item",
+      tool: "decompile_code_item",
+      input: {
+        item_address: "LSample;->value()I",
+        item_kind: "method",
+        unit_path: "sample.dex",
+      },
+    },
+    {
+      operation: "open_jeb_project",
+      tool: "open_project",
+      input: { path: "sample.apk" },
+    },
+  ].flatMap((request) =>
+    ["refusal", "unknown-version"].map((metadata) => ({
+      ...request,
+      metadata,
+    })),
+  ),
+)(
+  "preserves requested $operation through MCP with metadata $metadata",
+  async ({ operation, tool, input, metadata }) => {
+    let informationCalls = 0;
+    const fixture = await startJebMcpFixture((name) => {
+      if (name !== "get_client_information") return jebPrimaryResponses[name]!;
+      informationCalls++;
+      return metadata === "refusal" || informationCalls > 1
+        ? { success: false, message: "Client information temporarily refused" }
+        : { success: true, gui_client: false };
+    });
+    const provider = new JebProvider({
+      environment: { REA_JEB_MCP_URL: fixture.endpoint },
+    });
+    const session = createTestBinarySession(() => {
+      throw new Error("JEB must not start a deep provider");
+    });
+    const server = createServer(
+      { kind: "session", session },
+      { jebAnalysis: provider, environment: {} },
+    );
+    const client = new Client({ name: "jeb-attribution", version: "1" });
+    try {
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const call = () => client.callTool({ name: operation, arguments: input });
+      if (metadata === "unknown-version") {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const called = await call();
+          expect(called.isError).not.toBe(true);
+          const text = called.content
+            .map((block) => (block.type === "text" ? block.text : ""))
+            .join("");
+          const evidence = parseEvidence(JSON.parse(text));
+          expect(evidence.provider.version).toBeNull();
+          expect(evidence.normalized_result).toMatchObject({
+            engine: { version: null, gui_client: false },
+          });
+          expect(evidence.raw_result).toEqual(jebPrimaryResponses[tool]);
+        }
+        expect(fixture.calls).toEqual([tool, "get_client_information", tool]);
+      } else {
+        const failed = await client.callTool({
+          name: operation,
+          arguments: input,
+        });
+        expect(failed.isError).toBe(true);
+        const text = failed.content
+          .map((block) => (block.type === "text" ? block.text : ""))
+          .join("");
+        expect(JSON.parse(text)).toMatchObject({
+          error: {
+            code: "unsupported_target",
+            details: {
+              operation,
+              reason: "Client information temporarily refused",
+            },
+          },
+        });
+        expect(fixture.calls).toEqual([tool, "get_client_information"]);
+      }
+    } finally {
+      await client.close();
+      await server.close();
+      await session.close();
+      await provider.close();
+      await fixture.close();
+    }
+  },
+);

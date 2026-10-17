@@ -1,3 +1,4 @@
+import type { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import type { OfficialToolName } from "../contracts/officialToolContracts.js";
 import type { EnhancedToolName } from "../contracts/enhancedInputs.js";
@@ -8,9 +9,13 @@ import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import type { AnalysisProfileCommitment } from "../domain/analysisProfile.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { Result } from "../domain/result.js";
-import type { EvidenceLocation } from "../domain/evidence.js";
-import type { EvidenceSubjectTarget } from "../domain/evidence.js";
-import { jsonValueSchema } from "../domain/jsonValue.js";
+import {
+  createEvidence,
+  type Evidence,
+  type EvidenceLocation,
+  type EvidenceSubjectTarget,
+} from "../domain/evidence.js";
+import { jsonObjectSchema, jsonValueSchema } from "../domain/jsonValue.js";
 import type { ProgressReporter } from "./ProgressReporter.js";
 import type { ProviderRejectionCode } from "../contracts/providerSelection.js";
 import type { ProcessLineageObservation } from "../process/ProcessOwnership.js";
@@ -39,6 +44,9 @@ export type AnalysisOperation =
   | NativeToolName
   | ArtifactAnalysisOperation
   | ManagedToolName
+  // Provider aggregate and composed public overview have distinct Evidence and
+  // snapshot identities. This capability does not add a CLI/MCP tool.
+  | "read_binary_inventory_summary"
   | "health";
 
 /** Atomic successful provider observation with exact producing provenance. */
@@ -119,6 +127,26 @@ export function createAnalysisExecution(
   };
 }
 
+/**
+ * Compose one completed provider execution into its caller-visible Evidence,
+ * so success and a late cancellation that retains it carry identical facts.
+ */
+export const createAnalysisExecutionEvidence = (
+  operation: string,
+  input: unknown,
+  execution: AnalysisExecution,
+  confidence: "observed" | "derived",
+): Evidence =>
+  createEvidence(execution.subject ?? undefined, execution.provider, {
+    operation,
+    parameters: jsonObjectSchema.parse(input),
+    result: execution.result,
+    rawResult: execution.rawResult,
+    limitations: execution.limitations,
+    locations: execution.locations,
+    confidence,
+  });
+
 /** Provider-neutral application capability for one analysis operation. */
 export interface AnalysisOperationPort {
   execute(
@@ -158,6 +186,8 @@ export interface AnalysisClient extends AnalysisOperationPort {
   runtimeLineageSnapshots?(): readonly ProviderRuntimeLineageSnapshot[];
   /** Current provider work that may outlive a timed-out or cancelled caller. */
   requestActivitySnapshots?(): readonly ProviderRequestActivitySnapshot[];
+  /** Local reuse admission is separate from observed native process health. */
+  reuseReadiness?(): "ready" | "blocked" | "unknown";
   /** Current operational health for the active provider bridge. */
   operationHealthSnapshot?(): ProviderOperationHealth | undefined;
   /** Close owned resources and retain failed cleanup for a later retry. */
@@ -191,8 +221,12 @@ export interface AnalysisProfileResolution {
 }
 
 /** Cancellation context for side-effect-free provider profile resolution. */
-export interface AnalysisProfileResolutionOptions {
+export interface AnalysisProviderInspectionOptions {
   readonly signal?: AbortSignal;
+  readonly scope?: ProviderInspectionScope;
+}
+
+export interface AnalysisProfileResolutionOptions extends AnalysisProviderInspectionOptions {
   readonly fileCloseResources?: FileCloseResourceOwner;
 }
 
@@ -300,8 +334,15 @@ export interface AnalysisProviderCandidate extends AnalysisProvider {
     target: BinaryTarget,
     options?: AnalysisProfileResolutionOptions,
   ): Promise<Result<AnalysisProfileResolution, AnalysisError>>;
-  inspectAvailability(): ProviderAvailability;
-  inspectReadinessSnapshot?(): AnalysisProviderReadinessSnapshot;
+  /** Await prerequisite observations and finalization under the supplied owner signal. */
+  inspectAvailability(
+    options?: AnalysisProviderInspectionOptions,
+  ): ProviderAvailability | Promise<ProviderAvailability>;
+  inspectReadinessSnapshot?(
+    options?: AnalysisProviderInspectionOptions,
+  ):
+    | AnalysisProviderReadinessSnapshot
+    | Promise<AnalysisProviderReadinessSnapshot>;
   inspectTargetSupport(target: BinaryTarget): ProviderTargetSupport;
   /** Observe retained candidate cleanup without starting or retrying work. */
   hasPendingOwnedResources?(): boolean;

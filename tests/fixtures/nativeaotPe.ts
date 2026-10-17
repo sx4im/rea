@@ -89,3 +89,42 @@ export const nativeAotPeFixture = (major = 9, minor = 1): Buffer => {
   bytes.writeUInt16LE(0, frozen + 12 + value.length);
   return bytes;
 };
+
+/** An RTR indirection into PE headers; its whole pointer interval must map. */
+export const nativeAotPeHeaderIndirectionFixture = (rva: number): Buffer => {
+  const bytes = nativeAotPeFixture();
+  bytes.writeUInt32LE(204, 0x600 + 40);
+  bytes.writeBigUInt64LE(IMAGE_BASE + BigInt(rva), 0x600 + 48);
+  bytes.writeBigUInt64LE(0n, 0x600 + 56);
+  return bytes;
+};
+
+/** Keep section-table placement consistent with the selected optional header. */
+export const nativeAotPeOptionalHeaderFixture = (
+  optionalBytes: number,
+): Buffer => {
+  const bytes = nativeAotPeFixture();
+  bytes.copy(bytes, 0x98 + optionalBytes, 0x98 + 0xf0, 0x98 + 0xf0 + 80);
+  bytes.writeUInt16LE(optionalBytes, 0x94);
+  return bytes;
+};
+
+/** Add a zero-filled virtual section without changing the captured metadata bytes. */
+export const nativeAotPeVirtualSectionFixture = (
+  rva: number,
+  virtualSize: number,
+  position: "before-data" | "after-data" = "after-data",
+): Buffer => {
+  const bytes = nativeAotPeFixture();
+  const table = 0x98 + 0xf0;
+  const data = Buffer.from(bytes.subarray(table + 40, table + 80));
+  bytes.writeUInt16LE(3, 0x86);
+  const extra = position === "before-data" ? table + 40 : table + 80;
+  bytes.fill(0, extra, extra + 40);
+  bytes.write(".bss", extra, "ascii");
+  bytes.writeUInt32LE(virtualSize, extra + 8);
+  bytes.writeUInt32LE(rva, extra + 12);
+  bytes.writeUInt32LE(0xc0000080, extra + 36);
+  if (position === "before-data") data.copy(bytes, table + 80);
+  return bytes;
+};

@@ -604,10 +604,19 @@ describe("Objective-C malformed identity recovery", () => {
       ]);
       expect(result.objc_protocols.map(({ name }) => name)).toEqual([
         "AdoptedProtocol",
+        "FixtureProtocol",
       ]);
       expect(result.objc_protocol_records.map(({ name }) => name)).toEqual([
         "AdoptedProtocol",
+        "FixtureProtocol",
       ]);
+      expect(result.objc_protocol_records[1]).toMatchObject({
+        adopted_protocols: ["AdoptedProtocol"],
+        methods: selector === 0x920 ? [] : [{ selector: "requiredAction:" }],
+        optional_methods:
+          selector === 0x940 ? [] : [{ selector: "optionalAction:" }],
+        decode: { status: "partial", reason: "protocol_method_selector_empty" },
+      });
       expect(
         result.coverage.find(
           ({ facet }) => facet === "objc_class_method_ivar_metadata",
@@ -1139,6 +1148,48 @@ describe("Apple dispatch list scan budget", () => {
     expect(unmappedProtocolClassCoverage(result)).toMatchObject({
       status: "partial",
       reason: "Protocol 0x100000700: Objective-C protocol has an empty name",
+    });
+  });
+});
+
+describe("malformed Objective-C protocol method lists", () => {
+  it("reports an empty protocol method selector without discarding the protocol or its other methods", () => {
+    const bytes = fixture();
+    bytes.writeUInt32LE(2, 0x804);
+    // The first required method names an empty string; the second is valid.
+    bytes.writeBigUInt64LE(base + 0x930n, 0x808);
+    bytes.writeBigUInt64LE(base + 0x920n, 0x820);
+    const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
+    expect(result.objc_protocols).toMatchObject([
+      {
+        name: "FixtureProtocol",
+        methods: [{ selector: "requiredAction:", is_required: true }],
+        optional_methods: [{ selector: "optionalAction:", is_optional: true }],
+      },
+    ]);
+    expect(result.objc_protocol_records).toMatchObject([
+      {
+        name: "FixtureProtocol",
+        methods: [{ selector: "requiredAction:" }],
+        decode: { status: "partial", reason: "protocol_method_selector_empty" },
+      },
+    ]);
+    expect(result.objc_classes.map(({ name }) => name)).toEqual([
+      "Fixture",
+      "Fixture",
+    ]);
+    expect(result.objc_dispatch_implementations).toMatchObject([
+      { selector: "performAction:" },
+    ]);
+    expect(
+      result.coverage.find(
+        ({ facet }) => facet === "objc_class_method_ivar_metadata",
+      ),
+    ).toMatchObject({
+      status: "partial",
+      reason: expect.stringContaining(
+        "Protocol 0x100000740: Objective-C protocol FixtureProtocol required instance method 0 at 0x100000808 has an empty selector",
+      ),
     });
   });
 });

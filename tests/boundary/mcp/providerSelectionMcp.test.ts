@@ -20,6 +20,7 @@ import { composeBinarySession } from "../../../src/application/binary/BinarySess
 import { createAnalysisProfile } from "../../../src/domain/analysisProfile.js";
 import { err, ok } from "../../../src/domain/result.js";
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
+import { ProviderAdapterError } from "../../../src/domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../../src/domain/providerCleanupError.js";
 import { silentLogger } from "../../../src/logger.js";
 import { createServer } from "../../../src/server/createServer.js";
@@ -301,12 +302,12 @@ it("retains attributed mixed profile cleanup through registered MCP calls and pa
       code: "cleanup_incomplete",
       details: { resources: ["beta-file"] },
     });
-    expect(session.status()).toMatchObject({ cleanup_pending: true });
+    expect(await session.status()).toMatchObject({ cleanup_pending: true });
     released.add("beta");
     expect(
       (await mcp.callTool({ name: "close_binary", arguments: {} })).isError,
     ).not.toBe(true);
-    expect(session.status()).toMatchObject({ cleanup_pending: false });
+    expect(await session.status()).toMatchObject({ cleanup_pending: false });
     expect(failures.alpha.cleanupIncomplete).toBe(false);
     expect(failures.beta.cleanupIncomplete).toBe(false);
   } finally {
@@ -315,3 +316,116 @@ it("retains attributed mixed profile cleanup through registered MCP calls and pa
     await session.close();
   }
 });
+
+it.each(["ready", "cancelled", "physical"] as const)(
+  "awaits asynchronous candidate finalization through registered MCP status (%s)",
+  async (mode) => {
+    const starts: string[] = [];
+    const base = candidate("alpha", starts);
+    let enter!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const session = composeBinarySession(
+      new AnalysisProviderRegistry([
+        {
+          ...base,
+          inspectAvailability: async ({ signal } = {}) => {
+            enter();
+            await gate;
+            if (mode === "physical")
+              throw new ProviderAdapterError("alpha", "binary_session", {
+                diagnostics: {
+                  reason: "controlled physical readiness failure",
+                },
+              });
+            if (signal?.aborted)
+              throw new AnalysisCancelledError("binary_session", {
+                cause: signal.reason,
+              });
+            return base.inspectAvailability();
+          },
+        },
+      ]),
+    );
+    const server = createServer(
+      { kind: "session", session },
+      { logger: silentLogger },
+    );
+    const mcp = new Client({ name: "async-readiness", version: "1.0.0" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    resources.push(mcp, server, { close: () => session.close() });
+    await server.connect(serverTransport);
+    await mcp.connect(clientTransport);
+    let settled = false;
+    const observing = mcp
+      .callTool({ name: "binary_session", arguments: {} })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    let closing: ReturnType<typeof session.close> | undefined;
+    try {
+      await entered;
+      if (mode !== "ready") {
+        closing = session.close();
+        const during = structured(
+          await mcp.callTool({ name: "binary_session", arguments: {} }),
+        );
+        expect(during.result).toMatchObject({
+          cleanup_pending: true,
+          analysis_provider_candidates: [
+            {
+              provider: { id: "alpha" },
+              availability: {
+                status: "unknown",
+                diagnostics: { finalization: "in_progress" },
+              },
+            },
+          ],
+        });
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      finish();
+      const result = await observing;
+      if (mode === "ready") {
+        expect(result.isError).not.toBe(true);
+        expect(structured(result).result).toMatchObject({
+          analysis_provider_candidates: [
+            {
+              provider: { id: "alpha" },
+              availability: { status: "available" },
+            },
+          ],
+        });
+      } else {
+        expect(parseMcpToolError(result).error).toMatchObject(
+          mode === "cancelled"
+            ? { code: "cancelled", details: { operation: "binary_session" } }
+            : {
+                code: "execution_failure",
+                details: {
+                  operation: "binary_session",
+                  diagnostics: {
+                    reason: "controlled physical readiness failure",
+                  },
+                },
+              },
+        );
+        expect(await closing).toEqual(ok(null));
+      }
+      expect(starts).toEqual([]);
+    } finally {
+      finish();
+      await observing;
+      await closing;
+      await session.close();
+    }
+  },
+);

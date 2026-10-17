@@ -1,3 +1,4 @@
+import { waitForAbortableDelay } from "../process/ProviderDeadline.js";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -16,7 +17,10 @@ import {
   AnalysisInputError,
 } from "../domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
-import type { AnalysisError } from "../domain/analysisErrorBase.js";
+import { AnalysisError } from "../domain/analysisErrorBase.js";
+import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { ExecFileOutputCancelledError } from "../process/ExecFileOutput.js";
+import { NativeUiCleanupError } from "./NativeUiCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
   createNativeUiHelperRuntime,
@@ -29,6 +33,9 @@ import {
 
 const helper = fileURLToPath(
   new URL("../../bridge/native/ReaNativeUI.swift", import.meta.url),
+);
+const passiveInputSchema = nativeUiObservationInputSchema.transform(
+  (input) => ({ ...input, steps: [] }),
 );
 const responseSchema = z.discriminatedUnion("ok", [
   z.strictObject({ ok: z.literal(true), result: nativeUiSnapshotSchema }),
@@ -58,25 +65,56 @@ export const observeNativeUi = async (
 ): Promise<Result<z.infer<typeof nativeUiResultSchema>, AnalysisError>> => {
   const runtime =
     options.runtime ?? createNativeUiHelperRuntime(options.environment);
+  const signal =
+    options.signal === undefined
+      ? runtime.signal
+      : AbortSignal.any([options.signal, runtime.signal]);
+  let result: Result<z.infer<typeof nativeUiResultSchema>, AnalysisError>;
   try {
-    return await observeWithHelper(target, operation, parameters, {
-      ...options,
+    result = await observeWithHelper(target, operation, parameters, {
+      signal,
       invoke: options.invoke ?? runtime.invoke,
     });
-  } finally {
-    if (options.runtime === undefined) await runtime.close();
+  } catch (cause: unknown) {
+    result = err(
+      cause instanceof AnalysisError
+        ? cause
+        : new ProviderAdapterError("native-macos", operation, { cause }),
+    );
   }
+  if (options.runtime === undefined) {
+    try {
+      await runtime.close();
+    } catch (cause: unknown) {
+      result = finishNativeUiObservation(result, operation, signal);
+      const cleanup = new NativeUiCleanupError(
+        [{ runtime, cause }],
+        operation,
+        result.ok ? result.value : undefined,
+      );
+      return result.ok
+        ? err(cleanup)
+        : err(
+            analysisErrorWithCleanupFailure(
+              result.error,
+              cleanup,
+              operation,
+            ).bindCleanupDependencies([result.error, cleanup]),
+          );
+    }
+  }
+  return finishNativeUiObservation(result, operation, signal);
 };
 
 const observeWithHelper = async (
   target: BinaryTarget,
   operation: "observe_native_ui" | "capture_native_ui_scenario",
   parameters: unknown,
-  options: { signal?: AbortSignal | undefined; invoke: NativeUiHelper },
+  options: { signal: AbortSignal; invoke: NativeUiHelper },
 ): Promise<Result<z.infer<typeof nativeUiResultSchema>, AnalysisError>> => {
   const parsed = (
     operation === "observe_native_ui"
-      ? nativeUiObservationInputSchema
+      ? passiveInputSchema
       : nativeUiScenarioInputSchema
   ).safeParse(parameters);
   if (!parsed.success)
@@ -96,21 +134,18 @@ const observeWithHelper = async (
         cause: new Error("Enable screenshot or accessibility capture"),
       }),
     );
-  const steps =
-    operation === "capture_native_ui_scenario"
-      ? nativeUiScenarioInputSchema.parse(parameters).steps
-      : [];
-  const signal =
-    options.signal === undefined
-      ? AbortSignal.timeout(180_000)
-      : AbortSignal.any([options.signal, AbortSignal.timeout(180_000)]);
+  const steps = input.steps;
+  const signal = options.signal;
   const invoke = options.invoke;
   let launchTime: number | undefined;
   let outputBytes = 0;
   const take = async (
     action?: unknown,
   ): Promise<Result<z.infer<typeof nativeUiSnapshotSchema>, AnalysisError>> => {
-    if (signal.aborted) return err(new AnalysisCancelledError(operation));
+    if (signal.aborted)
+      return err(
+        new AnalysisCancelledError(operation, { cause: signal.reason }),
+      );
     try {
       const response = responseSchema.parse(
         await invoke(
@@ -163,10 +198,11 @@ const observeWithHelper = async (
           ),
         );
       return ok(response.result);
-    } catch (cause) {
+    } catch (cause: unknown) {
+      if (cause instanceof AnalysisError) return err(cause);
       return err(
-        signal.aborted
-          ? new AnalysisCancelledError(operation)
+        cause instanceof ExecFileOutputCancelledError
+          ? new AnalysisCancelledError(operation, { cause: cause.cause })
           : new ProviderAdapterError("native-macos", operation, {
               cause,
               diagnostics: {
@@ -183,8 +219,12 @@ const observeWithHelper = async (
   if (!initial.ok) return initial;
   const results: z.infer<typeof nativeUiResultSchema>["steps"] = [];
   let before = initial.value;
+  let terminalFailure: AnalysisError | undefined;
   for (const [index, step] of steps.entries()) {
     if (signal.aborted) {
+      terminalFailure = new AnalysisCancelledError(operation, {
+        cause: signal.reason,
+      });
       results.push({
         index,
         kind: step.kind,
@@ -195,36 +235,26 @@ const observeWithHelper = async (
       });
       break;
     }
-    if (step.kind === "wait") {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const abort = () => {
-            clearTimeout(timer);
-            reject(new Error("cancelled"));
-          };
-          const timer = setTimeout(() => {
-            signal.removeEventListener("abort", abort);
-            resolve();
-          }, step.milliseconds);
-          signal.addEventListener("abort", abort, { once: true });
-          if (signal.aborted) abort();
-        });
-      } catch (cause: unknown) {
-        // Cancellation is recorded as a cancelled outcome.
-        void cause;
-        results.push({
-          index,
-          kind: step.kind,
-          before,
-          after: null,
-          outcome: "cancelled",
-          reason: "Scenario cancelled during wait",
-        });
-        break;
-      }
+    if (
+      step.kind === "wait" &&
+      (await waitForAbortableDelay(step.milliseconds, signal)) === "aborted"
+    ) {
+      terminalFailure = new AnalysisCancelledError(operation, {
+        cause: signal.reason,
+      });
+      results.push({
+        index,
+        kind: step.kind,
+        before,
+        after: null,
+        outcome: "cancelled",
+        reason: "Scenario cancelled during wait",
+      });
+      break;
     }
     const after = await take(step.kind === "wait" ? undefined : step);
     if (!after.ok) {
+      terminalFailure = after.error;
       results.push({
         index,
         kind: step.kind,
@@ -248,19 +278,35 @@ const observeWithHelper = async (
     });
     before = after.value;
   }
-  return ok(
-    nativeUiResultSchema.parse({
-      target_sha256: target.sha256,
-      initial: initial.value,
-      steps: results,
-      restore: "leave-as-is",
-      limitations: [
-        "Only the explicitly selected already-running process/window is admitted. REA starts no target process and does not change permissions, foreground applications, or restore application data.",
-        "Click uses AXPress; scroll uses AXIncrement/AXDecrement; key-entry sets the selected element's AXValue. Unsupported elements fail without global event fallback.",
-        "Each completed action is followed immediately by capture; delayed UI changes require explicit wait steps. A failed after-capture can follow a completed action, so failure does not prove absence of application effects.",
-        "Scenarios can change app data, cause app network activity and persist changes. The caller explicitly chooses leave-as-is; automatic restoration is unsupported.",
-        "Window matching uses exact PID and window ID for screenshots and unique accessibility geometry. Accessibility paths can change as the UI changes; stale or ambiguous paths fail. Screenshots are scaled to at most 2048 pixels; scenario output is budgeted at 64 MiB and execution is cancelled after 180 seconds.",
-      ],
-    }),
-  );
+  const report = nativeUiResultSchema.parse({
+    target_sha256: target.sha256,
+    initial: initial.value,
+    steps: results,
+    restore: "leave-as-is",
+    limitations: [
+      "Only the explicitly selected already-running process/window is admitted. REA starts no target process and does not change permissions, foreground applications, or restore application data.",
+      "Click uses AXPress; scroll uses AXIncrement/AXDecrement; key-entry sets the selected element's AXValue. Unsupported elements fail without global event fallback.",
+      "Each completed action is followed immediately by capture; delayed UI changes require explicit wait steps. A failed after-capture can follow a completed action, so failure does not prove absence of application effects.",
+      "Scenarios can change app data, cause app network activity and persist changes. The caller explicitly chooses leave-as-is; automatic restoration is unsupported.",
+      "Window matching uses exact PID and window ID for screenshots and unique accessibility geometry. Accessibility paths can change as the UI changes; stale or ambiguous paths fail. Screenshots are scaled to at most 2048 pixels; scenario output is budgeted at 64 MiB and execution is cancelled after 180 seconds.",
+    ],
+  });
+  return terminalFailure === undefined
+    ? finishNativeUiObservation(ok(report), operation, signal)
+    : err(terminalFailure.retainPartialObservation(report));
 };
+
+/** A validated report survives cancellation observed at its finalization boundary. */
+export const finishNativeUiObservation = (
+  result: Result<z.infer<typeof nativeUiResultSchema>, AnalysisError>,
+  operation: string,
+  signal?: AbortSignal,
+): Result<z.infer<typeof nativeUiResultSchema>, AnalysisError> =>
+  result.ok && signal?.aborted
+    ? err(
+        new AnalysisCancelledError(operation, {
+          cause: signal.reason,
+          partialObservation: result.value,
+        }),
+      )
+    : result;

@@ -829,9 +829,11 @@ it.skipIf(process.platform === "win32").each(["first", "second"] as const)(
   },
 );
 
-it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "retains a failed compilation cleanup for a later close retry",
-  async () => {
+it
+  .skipIf(process.platform === "win32" || process.getuid?.() === 0)
+  .each(["reader-close", "exact-root"] as const)(
+  "retains a failed compilation cleanup for a later %s retry",
+  async (retry) => {
     const directory = await mkdtemp(
       join(tmpdir(), "rea-process-token-cleanup-retry-test-"),
     );
@@ -854,10 +856,31 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       );
       await chmod(state.root, 0o000);
       controller.abort();
-      expect((await preparation).state).toBe("rejected");
-      await expect(reader.close()).rejects.toThrow();
-      await chmod(state.root, 0o700);
-      await reader.close();
+      const outcome = await preparation;
+      expect(outcome.state).toBe("rejected");
+      if (retry === "reader-close") {
+        await expect(reader.close()).rejects.toThrow();
+        await chmod(state.root, 0o700);
+        await reader.close();
+      } else {
+        if (
+          outcome.state !== "rejected" ||
+          !(outcome.cause instanceof DarwinProcessOwnershipInspectionError)
+        )
+          throw new Error("Expected owned compilation cleanup failure");
+        const failure = outcome.cause;
+        expect(failure.cleanupOwner).toBeDefined();
+        expect(failure.cleanupFailure?.cleanupIncomplete).toBe(true);
+        await expect(failure.cleanupOwner?.close()).rejects.toThrow();
+        await chmod(state.root, 0o700);
+        await failure.cleanupOwner?.close();
+        expect(failure.cleanupFailure?.cleanupIncomplete).toBe(false);
+        // Releasing the failed root does not close the shared reader itself.
+        const stopped = new AbortController();
+        const reason = { request: "probe reader remains open" };
+        stopped.abort(reason);
+        await expect(reader.prepare(stopped.signal)).rejects.toBe(reason);
+      }
       await expect(access(state.root)).rejects.toThrow();
     } finally {
       if (!controller.signal.aborted) controller.abort();

@@ -273,7 +273,7 @@ const propertyFields = (
 };
 
 const normalized = (value: string, caseSensitive: boolean): string => {
-  const normalizedValue = value.normalize("NFKC");
+  const normalizedValue = value.normalize(caseSensitive ? "NFC" : "NFKC");
   return caseSensitive
     ? normalizedValue
     : normalizedValue.toLocaleLowerCase("en-US");

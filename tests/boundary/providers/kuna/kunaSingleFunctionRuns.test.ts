@@ -1,5 +1,7 @@
 import { expect, it as test } from "vitest";
 
+import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
+
 import {
   fakeKunaCalls,
   fakeKunaExits,
@@ -278,6 +280,34 @@ it("drops the least recently used text beyond the session's 16 MiB budget", asyn
       "0x1080",
       "0x1040",
     ]);
+  } finally {
+    expect(await client.close()).toEqual({ ok: true, value: null });
+  }
+});
+
+it("names the setting that owns a single-function deadline", async () => {
+  const { open } = await session(
+    "rea-kuna-function-deadline-",
+    { project: "hang", decompile: "hang" },
+    { REA_KUNA_TIMEOUT_MS: "300" },
+  );
+  const client = open();
+  try {
+    const result = await client.execute("procedure_pseudo_code", {
+      procedure: "main",
+    });
+    if (result.ok) throw new Error("the hanging run answered");
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "provider_timeout",
+      message:
+        "kuna decompile did not finish within REA_KUNA_TIMEOUT_MS (300 ms).",
+      remediation: {
+        action: expect.stringMatching(
+          /^Raise REA_KUNA_TIMEOUT_MS .* restart REA.*project export/u,
+        ),
+      },
+      details: { timeout_ms: 300 },
+    });
   } finally {
     expect(await client.close()).toEqual({ ok: true, value: null });
   }

@@ -47,6 +47,28 @@ export interface KunaConfiguration {
   readonly jobs: number;
 }
 
+/** One configured deadline and the setting that owns it. */
+export interface KunaDeadline {
+  readonly setting: "REA_KUNA_TIMEOUT_MS" | "REA_KUNA_PROJECT_TIMEOUT_MS";
+  readonly ms: number;
+}
+
+/** Single-function decompiles and the standalone inventory. */
+export const kunaFunctionDeadline = (
+  configuration: KunaConfiguration,
+): KunaDeadline => ({
+  setting: "REA_KUNA_TIMEOUT_MS",
+  ms: configuration.functionTimeoutMs,
+});
+
+/** The project export and whole-program string, graph and xref scans. */
+export const kunaProjectDeadline = (
+  configuration: KunaConfiguration,
+): KunaDeadline => ({
+  setting: "REA_KUNA_PROJECT_TIMEOUT_MS",
+  ms: configuration.projectTimeoutMs,
+});
+
 /** Why the configured environment cannot select a Kuna installation. */
 export interface KunaConfigurationFailure {
   readonly code: "not_configured" | "open_options_invalid" | "unsupported_host";

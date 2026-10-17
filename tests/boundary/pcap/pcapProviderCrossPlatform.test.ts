@@ -7,12 +7,15 @@
  * refusal paths, and cancellation before spawn.
  */
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, it, onTestFinished } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 import { PcapProvider } from "../../../src/pcap/PcapProvider.js";
+import { PcapSnapshot } from "../../../src/pcap/PcapSnapshot.js";
+import * as regularFile from "../../../src/filesystem/RegularFile.js";
+import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
 import type { PcapCommandLauncher } from "../../../src/pcap/PcapCommand.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import type { PcapRequest } from "../../../src/domain/pcap/pcapAnalysis.js";
@@ -200,3 +203,37 @@ it.runIf(!hasNativeBound)(
     expect(projected.remediation.action).toBe(projected.message);
   },
 );
+
+it("retains a verification admission owner before translating cancellation", async () => {
+  const root = await createTestTempDirectory("rea-pcap-verify-admission-");
+  const path = join(root, "held.bin");
+  await writeFile(path, "held capture bytes");
+  const handle = await open(path, "r");
+  const owner = new OwnedFileHandle(handle);
+  const controller = new AbortController();
+  const reason = null;
+  const snapshot = await PcapSnapshot.create();
+  const admission = vi
+    .spyOn(regularFile, "openRegularFile")
+    .mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw new regularFile.RegularFileAdmissionFailure(
+        snapshot.path,
+        new regularFile.RegularFileOperationCancelled(reason),
+        new Error("admission close unavailable"),
+        owner,
+      );
+    });
+  try {
+    await expect(
+      snapshot.verify({ bytes: 0, sha256: "unused" }, path, controller.signal),
+    ).rejects.toMatchObject({ _tag: "AnalysisCancelledError", cause: reason });
+    expect(handle.fd).toBeGreaterThanOrEqual(0);
+    await snapshot.close();
+    expect(handle.fd).toBe(-1);
+  } finally {
+    admission.mockRestore();
+    await snapshot.close();
+    await owner.close();
+  }
+});

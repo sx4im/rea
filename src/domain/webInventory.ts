@@ -67,35 +67,49 @@ export const reconcileWebScript = (
   return { status: "unmatched", reason: "no_exact_sanitized_url" };
 };
 
-/** Prefer exact transient raw-URL matching, then report sanitized ambiguity. */
-export const reconcileCapturedWebScript = (
-  script: WebInventoryScriptInput & { readonly rawUrl: string },
+/** Index one capture's observations without merging duplicate raw URLs. */
+export const createCapturedWebScriptReconciler = (
   rawResources: readonly (WebInventoryResourceInput & {
     readonly rawUrl: string;
   })[],
   resources: readonly StableWebResource[],
-): WebResourceReconciliation => {
-  const exact = rawResources.filter(
-    (resource) => resource.rawUrl === script.rawUrl,
-  );
-  if (exact.length === 1) {
-    const resource = exact[0];
-    if (resource !== undefined) {
+): ((
+  script: WebInventoryScriptInput & {
+    readonly rawUrl: string;
+  },
+) => WebResourceReconciliation) => {
+  // null means multiple observations, even when their public facts deduplicate.
+  const rawByUrl = new Map<string, (typeof rawResources)[number] | null>();
+  for (const resource of rawResources)
+    rawByUrl.set(
+      resource.rawUrl,
+      rawByUrl.has(resource.rawUrl) ? null : resource,
+    );
+  const keysByUrl = new Map<string, string[]>();
+  for (const resource of resources) {
+    const keys = keysByUrl.get(resource.url);
+    if (keys === undefined)
+      keysByUrl.set(resource.url, [resource.resource_key]);
+    else keys.push(resource.resource_key);
+  }
+  for (const [url, keys] of keysByUrl)
+    if (keys.length > 1) keysByUrl.set(url, [...new Set(keys)].sort());
+  return (script) => {
+    const resource = rawByUrl.get(script.rawUrl);
+    if (resource !== undefined && resource !== null) {
       const { rawUrl: _rawUrl, ...publicResource } = resource;
       const stable = stableWebResources([publicResource])[0];
       if (stable !== undefined)
         return { status: "exact", resource_key: stable.resource_key };
     }
-  }
-  const candidates = resources.filter(
-    (resource) => resource.url === script.url,
-  );
-  if (candidates.length > 0)
-    return {
-      status: "ambiguous",
-      candidate_resource_keys: uniqueResourceKeys(candidates),
-    };
-  return { status: "unmatched", reason: "no_exact_sanitized_url" };
+    const candidates = keysByUrl.get(script.url);
+    if (candidates !== undefined)
+      return {
+        status: "ambiguous",
+        candidate_resource_keys: [...candidates],
+      };
+    return { status: "unmatched", reason: "no_exact_sanitized_url" };
+  };
 };
 
 /** Stable script identity excludes target IDs, CDP script IDs, and timestamps. */

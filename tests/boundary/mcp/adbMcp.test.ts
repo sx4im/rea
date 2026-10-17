@@ -194,9 +194,25 @@ const results: Readonly<Record<string, unknown>> = {
   inspect_adb_window: {
     client: clientIdentity,
     serial: "emulator-5554",
+    source_section: "windows",
+    focus_summary: "single_context",
+    focus_contexts: [
+      {
+        scope: "unscoped",
+        display_id: null,
+        header_line: null,
+        declarations: [
+          {
+            field: "mCurrentFocus",
+            value: "Window{abcdef u0 com.example.app/Main}",
+            raw_line: "mCurrentFocus=Window{abcdef u0 com.example.app/Main}",
+          },
+        ],
+      },
+    ],
     focused_window: "Window{abcdef u0 com.example.app/Main}",
     focused_app: null,
-    observed_lines: ["Window{abcdef u0 com.example.app/Main}"],
+    observed_lines: ["mCurrentFocus=Window{abcdef u0 com.example.app/Main}"],
   },
   read_adb_setting: {
     client: clientIdentity,

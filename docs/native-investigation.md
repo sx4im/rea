@@ -261,6 +261,13 @@ Mach-O fixtures check each case against source-owned return values.
 
 ## Static inspection
 
+`inspect_plist.format` describes the selected source, not plutil's conversion
+format. Sources explicitly identified as XML, binary or JSON retain those
+labels. For generic text, a bounded source-prefix probe recognizes leading XML
+markup, including UTF-8 and BOM-marked UTF-16 sources. Unidentified text and
+OpenStep plists, including a data-only value such as `<deadbeef>`, report
+`unknown` even when plutil decodes their values through an XML conversion.
+
 `inspect_macho.selected_architecture` identifies the exact selected lipo slice
 and its `container_file_offset` in the input file. A thin Mach-O has a known
 offset of zero; an unknown universal-slice offset stays null. The Evidence
@@ -418,7 +425,11 @@ decrement scrolling and text-value entry, or bounded waits. No global event
 injection is used. Unsupported AX actions fail explicitly. The result preserves
 ordered before/after captures and gaps; an action may have occurred before a
 post-action capture fails. Application state is left as-is; REA does not attempt
-to restore it.
+to restore it. Failed or cancelled scenarios return a typed error with the
+collected report in `partial_observation`, including ordered step outcomes.
+Cancellation preserves the caller's reason and remains observable through helper
+cleanup. A later abort does not replace an earlier helper or output failure.
+Cleanup failures retain their runtime owner until a confirmed cleanup retry.
 
 Scenarios accept caller-selected action lists and accessibility node counts.
 Individual waits cannot exceed the operation's 180-second deadline, and the

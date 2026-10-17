@@ -461,6 +461,21 @@ const pullFailure = z.strictObject({
   message: z.string().min(1),
 });
 
+/** Display ownership and source declarations, including unknown identities. */
+export const adbWindowFocusContextSchema = z.strictObject({
+  scope: z.enum(["display", "unscoped"]),
+  display_id: z.string().nullable(),
+  header_line: z.string().nullable(),
+  declarations: z.array(
+    z.strictObject({
+      field: z.enum(["mCurrentFocus", "mFocusedApp"]),
+      value: z.string().nullable(),
+      raw_line: z.string().min(1),
+    }),
+  ),
+});
+export type AdbWindowFocusContext = z.infer<typeof adbWindowFocusContextSchema>;
+
 /** Portable ADB observations with explicit identity and coverage limitations. */
 export const adbResultSchemas = {
   inspect_adb_client: z.strictObject({
@@ -652,6 +667,9 @@ export const adbResultSchemas = {
   inspect_adb_window: z.strictObject({
     client,
     serial: z.string().min(1),
+    source_section: z.enum(["windows", "displays"]),
+    focus_contexts: z.array(adbWindowFocusContextSchema),
+    focus_summary: z.enum(["single_context", "ambiguous", "unavailable"]),
     focused_window: z.string().nullable(),
     focused_app: z.string().nullable(),
     observed_lines: z.array(z.string().min(1)),
@@ -731,6 +749,12 @@ export const adbResultSchemas = {
     package_name: packageNameSchema,
   }),
 } as const;
+
+/** Parsed focus facts, before the adapter supplies client and command identity. */
+export type AdbWindowFocusObservation = Omit<
+  z.infer<typeof adbResultSchemas.inspect_adb_window>,
+  "client" | "serial" | "source_section"
+>;
 
 /** Launch-attempt facts retained when Activity Manager does not report success. */
 export type AdbActivityStartPartialObservation =

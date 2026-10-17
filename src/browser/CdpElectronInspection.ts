@@ -10,17 +10,18 @@ import type { CdpEndpointDiscovery, CdpEndpointTarget } from "./CdpEndpoint.js";
 import { CdpCaptureCompleteness } from "./CdpCaptureCompleteness.js";
 import {
   delayWithCancellation,
-  numberValue,
+  resourceContentSize,
   recordValue,
   requiredRecord,
   cdpStringValue,
 } from "./CdpCaptureValues.js";
 import {
   frameTreeResources,
-  snapshotDocumentNodes,
   snapshotDocuments,
   walkFrameTrees,
 } from "./CdpCaptureDocuments.js";
+import { snapshotDocumentNodes, snapshotNodeAt } from "./CdpSnapshotNodes.js";
+import { cdpSnapshotString } from "./CdpSnapshotStrings.js";
 import {
   ingestElectronScriptEvent,
   type ElectronScriptDraft,
@@ -291,14 +292,14 @@ const captureResources = async (
       completeness.exclude("resources", "out_of_target_scope");
       continue;
     }
+    const contentSize = resourceContentSize(resource.contentSize);
+    if (!contentSize.ok)
+      completeness.exclude("resources", "invalid_protocol_value");
     const item = {
       file_path: path,
       type: cdpStringValue(resource.type) ?? "Other",
       mime_type: cdpStringValue(resource.mimeType) ?? "",
-      content_size:
-        numberValue(resource.contentSize) === undefined
-          ? null
-          : Math.max(0, numberValue(resource.contentSize) ?? 0),
+      content_size: contentSize.ok ? contentSize.value : null,
     };
     const resourceKey = `electron_resource_${digestCanonicalValue(item, "CDP capture")}`;
     if (seen.has(resourceKey)) continue;
@@ -331,43 +332,44 @@ const captureDom = async (
     invalid(null);
     return { total_nodes: 0, nodes: [] };
   }
-  const strings = result.strings.map((value) =>
-    typeof value === "string" ? value : "",
-  );
+  const strings = result.strings.map(cdpStringValue);
   const nodes: ElectronPageInspection["dom"]["nodes"] = [];
   let total = 0;
   for (const document of snapshotDocuments(result.documents, invalid)) {
-    const documentUrl = stringAt(strings, document.documentURL);
+    const documentUrl = cdpSnapshotString(strings, document.documentURL);
+    if (documentUrl === undefined) {
+      invalid(1);
+      continue;
+    }
     if ((await authorizedElectronFile(documentUrl)) === undefined) {
       completeness.exclude("dom", "out_of_target_scope");
       continue;
     }
     // The shared snapshot owner validates the parallel node arrays.
-    const documentNodes = snapshotDocumentNodes(document.nodes);
+    const documentNodes = snapshotDocumentNodes(document.nodes, strings);
     if (documentNodes === undefined) {
       invalid(1);
       continue;
     }
     if (documentNodes.excessAttributes > 0)
       invalid(documentNodes.excessAttributes);
-    const { nodeTypes, nodeNames, nodeValues, parents, attributes } =
-      documentNodes;
-    const baseIndex = nodes.length;
-    total += nodeTypes.length;
-    for (let index = 0; index < nodeTypes.length; index += 1) {
-      const attributeIndexes = arrayValue(attributes[index]);
-      const parent = integer(parents[index], -1);
+    const baseIndex = total;
+    total += documentNodes.nodeTypes.length;
+    for (let index = 0; index < documentNodes.nodeTypes.length; index += 1) {
+      const admitted = snapshotNodeAt(documentNodes, index);
+      if (!admitted.ok) {
+        invalid(1);
+        continue;
+      }
+      const { nodeType, nodeName, nodeValue, parent, attributes } =
+        admitted.value;
       nodes.push({
-        index: nodes.length,
+        index: baseIndex + index,
         parent_index: parent < 0 ? -1 : baseIndex + parent,
-        node_type: integer(nodeTypes[index], 0),
-        node_name: stringAt(strings, nodeNames[index]),
-        node_value_length: Buffer.byteLength(
-          stringAt(strings, nodeValues[index]),
-        ),
-        attribute_names: attributeIndexes
-          .filter((_value, attributeIndex) => attributeIndex % 2 === 0)
-          .map((value) => stringAt(strings, value)),
+        node_type: nodeType,
+        node_name: nodeName,
+        node_value_length: Buffer.byteLength(nodeValue),
+        attribute_names: attributes.map(([name]) => name),
       });
     }
   }
@@ -378,17 +380,6 @@ const mainFilePath = async (result: unknown): Promise<string | undefined> => {
   const frameTree = recordValue(requiredRecord(result).frameTree);
   const frame = recordValue(frameTree?.frame);
   return await authorizedElectronFile(cdpStringValue(frame?.url) ?? "");
-};
-
-const arrayValue = (value: unknown): readonly unknown[] =>
-  Array.isArray(value) ? value : [];
-
-const stringAt = (strings: readonly string[], value: unknown): string =>
-  strings[integer(value, -1)] ?? "";
-
-const integer = (value: unknown, fallback: number): number => {
-  const number = numberValue(value);
-  return number === undefined ? fallback : Math.trunc(number);
 };
 
 const report = async (

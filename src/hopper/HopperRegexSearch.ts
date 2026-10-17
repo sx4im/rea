@@ -13,6 +13,7 @@ import { err, ok, type Result } from "../domain/result.js";
 import { analysisSearchInput } from "../contracts/analysisSearchContract.js";
 import type { HopperClient } from "./HopperClient.js";
 import { matchRegexValues } from "../process/RegexMatcher.js";
+import { analysisClientFailureForOperation } from "../providers/AnalysisClientFailure.js";
 
 const inputSchema = z.strictObject({
   ...analysisSearchInput,
@@ -94,7 +95,10 @@ export class HopperRegexSearch {
         : { document: input.data.document },
       inventoryOptions,
     );
-    if (!inventory.ok) return inventory;
+    if (!inventory.ok)
+      return err(
+        analysisClientFailureForOperation(inventory.error, "hopper", operation),
+      );
     const parsed = z.array(analysisStringSchema).safeParse(inventory.value);
     if (!parsed.success)
       return err(
@@ -104,7 +108,9 @@ export class HopperRegexSearch {
         ),
       );
     if (options.signal?.aborted)
-      return err(new AnalysisCancelledError(operation));
+      return err(
+        new AnalysisCancelledError(operation, { cause: options.signal.reason }),
+      );
     await options.progress
       ?.report({
         phase: "hopper_regex",
@@ -114,7 +120,9 @@ export class HopperRegexSearch {
       })
       .catch(() => undefined);
     if (options.signal?.aborted)
-      return err(new AnalysisCancelledError(operation));
+      return err(
+        new AnalysisCancelledError(operation, { cause: options.signal.reason }),
+      );
     const matched = await matchRegexValues({
       operation,
       pattern: input.data.pattern,

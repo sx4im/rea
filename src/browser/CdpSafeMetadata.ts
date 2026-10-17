@@ -1,6 +1,7 @@
 import type { WebPageInspection } from "../domain/browserObservationSchemas.js";
 import { sanitizeBrowserUrl } from "../domain/browserObservation.js";
 import { cdpStringValue, type UnknownRecord } from "./CdpCaptureValues.js";
+import { structuredFieldToken } from "./StructuredFieldToken.js";
 
 type ResponseMetadata = WebPageInspection["metadata"]["responses"][number];
 type LinkMetadata = ResponseMetadata["links"][number];
@@ -44,8 +45,8 @@ export const safeResponseMetadata = (
       csp,
       links,
       policies: {
-        coop: policyToken(headers.get("cross-origin-opener-policy")),
-        coep: policyToken(headers.get("cross-origin-embedder-policy")),
+        coop: structuredFieldToken(headers.get("cross-origin-opener-policy")),
+        coep: structuredFieldToken(headers.get("cross-origin-embedder-policy")),
         corp: policyToken(headers.get("cross-origin-resource-policy")),
         referrer_policy: referrerPolicy(headers.get("referrer-policy")),
         x_content_type_options: policyToken(
@@ -185,26 +186,29 @@ const parseLinks = (
   allowedOrigins: ReadonlySet<string>,
 ): LinkMetadata[] => {
   const links: LinkMetadata[] = [];
-  for (const entry of splitLinkHeader(value ?? "")) {
-    const match = /^\s*<([^>]*)>(.*)$/u.exec(entry);
-    if (match === null) continue;
-    const parameters = linkParameters(match[2] ?? "");
-    const destination = safeDestination(
-      match[1] ?? "",
-      baseUrl,
-      allowedOrigins,
-    );
-    links.push({
-      href: destination.url,
-      destination_scope: destination.scope,
-      rel: (parameters.get("rel") ?? "")
-        .toLowerCase()
-        .split(/\s+/u)
-        .filter(Boolean),
-      as: boundedHeader(parameters.get("as")),
-      type: boundedHeader(parameters.get("type")),
-      crossorigin: boundedHeader(parameters.get("crossorigin")),
-    });
+  // CDP joins repeated field lines with LF; quoted delimiters belong to one line.
+  for (const line of (value ?? "").split(/\r?\n/u)) {
+    for (const entry of splitLinkHeader(line)) {
+      const match = /^\s*<([^>]*)>(.*)$/u.exec(entry);
+      if (match === null) continue;
+      const parameters = linkParameters(match[2] ?? "");
+      const destination = safeDestination(
+        match[1] ?? "",
+        baseUrl,
+        allowedOrigins,
+      );
+      links.push({
+        href: destination.url,
+        destination_scope: destination.scope,
+        rel: (parameters.get("rel") ?? "")
+          .toLowerCase()
+          .split(/\s+/u)
+          .filter(Boolean),
+        as: boundedHeader(parameters.get("as")),
+        type: boundedHeader(parameters.get("type")),
+        crossorigin: boundedHeader(parameters.get("crossorigin")),
+      });
+    }
   }
   return links;
 };

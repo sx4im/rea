@@ -96,6 +96,7 @@ it("reports only owners whose cleanup failed during a mixed retry", async () => 
   };
   expect(await scope.release(first)).toMatchObject({ kind: "failed" });
   expect(await scope.release(second)).toMatchObject({ kind: "failed" });
+  expect(scope.cleanupResources).toEqual(["first lease", "second lease"]);
 
   await expect(scope.retryCleanup()).rejects.toMatchObject({
     failedOwners: [second],
@@ -103,9 +104,11 @@ it("reports only owners whose cleanup failed during a mixed retry", async () => 
   });
   expect(firstAttempts).toBe(2);
   expect(secondAttempts).toBe(2);
+  expect(scope.cleanupResources).toEqual(["second lease"]);
   await scope.close();
   expect(firstAttempts).toBe(2);
   expect(secondAttempts).toBe(3);
+  expect(scope.cleanupResources).toEqual([]);
 });
 
 it("retains a failed source analyzer until shutdown can verify its release", async () => {

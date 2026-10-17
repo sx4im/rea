@@ -265,7 +265,10 @@ describe("JavaScript semantic analysis: read-modify-write", () => {
       let value;
       [value = source.count] = [];
     `);
-    expect(ir.objectOperations.map(({ kind }) => kind)).toEqual(["read"]);
+    expect(ir.objectOperations.map(({ kind }) => kind)).toEqual([
+      "destructure",
+      "read",
+    ]);
   });
 
   it("does not model a compound binding write as a competing replacement", () => {
@@ -547,6 +550,62 @@ describe("nonfinite static values", () => {
 });
 
 describe("binding write invalidation", () => {
+  it.each(["in", "of"])(
+    "retains prototype uncertainty for an empty template in for-%s",
+    (operator) => {
+      const ir = analyzeJavaScriptSemantics(`
+        String.prototype.extra = "possible inherited key";
+        let selected = "before";
+        for (selected ${operator} \`\`) {}
+        const observed = selected;
+      `);
+      expect(
+        topLevelBinding(ir, "selected").definitions.some(
+          ({ kind }) => kind === "assignment",
+        ),
+      ).toBe(true);
+      expect(topLevelBinding(ir, "observed").value.status).not.toBe("literal");
+    },
+  );
+
+  it.each(
+    [
+      { input: '"abc"', empty: false },
+      { input: "`abc`", empty: false },
+      { input: "`\\u0061`", empty: false },
+      { input: '""', empty: true },
+      { input: "``", empty: true },
+      { input: "`\\\n`", empty: true },
+    ].flatMap((literal) =>
+      ["in", "of"].flatMap((operator) =>
+        ["selected", "[selected]"].map((head) => ({
+          ...literal,
+          operator,
+          head,
+        })),
+      ),
+    ),
+  )(
+    "preserves writes for $head $operator $input (empty=$empty)",
+    ({ input, empty, operator, head }) => {
+      const ir = analyzeJavaScriptSemantics(`
+        let selected = "before";
+        for (${head} ${operator} ${input}) {}
+        const observed = selected;
+        export function result() { return observed; }
+      `);
+      expect(
+        topLevelBinding(ir, "selected").definitions.some(
+          ({ kind }) => kind === "assignment",
+        ),
+      ).toBe(!empty);
+      const value = topLevelBinding(ir, "observed").value;
+      if (empty) expect(value).toEqual({ status: "literal", value: "before" });
+      else expect(value).not.toEqual({ status: "literal", value: "before" });
+      expect(onlyCallable(ir, "result").returnSites[0]?.value).toEqual(value);
+    },
+  );
+
   it.each([
     ["let value = 1; value++; const observed = value;", "unknown"],
     ["let value = 1; --value; const observed = value;", "unknown"],

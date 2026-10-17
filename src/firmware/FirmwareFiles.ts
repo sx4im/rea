@@ -22,6 +22,7 @@ import {
   mapArtifactFileFailure,
 } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
+import { readArtifactFileChunks } from "../artifacts/readArtifactFileChunks.js";
 import { NonRegularFileReadError } from "../filesystem/RegularFile.js";
 
 /** One regular file or unpublished filesystem entry in a private extraction. */
@@ -67,16 +68,9 @@ export class FirmwareFileAccess {
       signal,
       async (handle) => {
         const hash = createHash("sha256");
-        try {
-          for await (const chunk of handle.createReadStream({
-            autoClose: false,
-            signal,
-          })) {
-            assertArtifactReadActive(signal);
-            hash.update(chunk);
-          }
-        } catch (cause: unknown) {
-          throwFirmwareStreamFailure(cause, signal);
+        for await (const chunk of readArtifactFileChunks(handle, { signal })) {
+          assertArtifactReadActive(signal);
+          hash.update(chunk);
         }
         assertArtifactReadActive(signal);
         return hash.digest("hex");
@@ -107,7 +101,7 @@ export class FirmwareFileAccess {
           transform(chunk: Buffer, _encoding, callback) {
             size += chunk.length;
             if (size > FIRMWARE_LIMITS.inputBytes) {
-              callback(new Error("Firmware grew beyond the input byte budget"));
+              callback(firmwareInputFailure(request.operation));
               return;
             }
             hash.update(chunk);
@@ -115,11 +109,10 @@ export class FirmwareFileAccess {
           },
         });
         await pipeline(
-          handle.createReadStream({ autoClose: false }),
+          readArtifactFileChunks(handle, { signal }),
           meter,
           createWriteStream(fullPath, { flags: "wx", mode: 0o600 }),
-          { signal },
-        ).catch((cause: unknown) => throwFirmwareStreamFailure(cause, signal));
+        );
         return { size, sha256: hash.digest("hex") };
       },
     ).catch((cause: unknown) => {
@@ -152,15 +145,12 @@ export class FirmwareFileAccess {
         signal,
         async (handle) => {
           await pipeline(
-            handle.createReadStream({
+            readArtifactFileChunks(handle, {
               start: offset,
               end: offset + length - 1,
-              autoClose: false,
+              signal,
             }),
             createWriteStream(inputPath, { flags: "wx", mode: 0o600 }),
-            { signal },
-          ).catch((cause: unknown) =>
-            throwFirmwareStreamFailure(cause, signal),
           );
         },
       );
@@ -187,22 +177,13 @@ export class FirmwareFileAccess {
     signal: AbortSignal,
   ) {
     return this.#resources.run(() =>
-      withArtifactRegularFile(
-        entry.path,
-        this.#resources,
-        signal,
-        async (handle) => {
-          try {
-            return await tree.write(
-              entry.relativePath,
-              handle.createReadStream({ autoClose: false, signal }),
-              { sha256, bytes: entry.size },
-              signal,
-            );
-          } catch (cause: unknown) {
-            return throwFirmwareStreamFailure(cause, signal);
-          }
-        },
+      withArtifactRegularFile(entry.path, this.#resources, signal, (handle) =>
+        tree.write(
+          entry.relativePath,
+          readArtifactFileChunks(handle, { signal }),
+          { sha256, bytes: entry.size },
+          signal,
+        ),
       ),
     );
   }
@@ -262,29 +243,12 @@ const firmwareAdmissionFailure = (
   );
 };
 
-const throwFirmwareStreamFailure = (
-  cause: unknown,
-  signal?: AbortSignal,
-): never => {
-  if (
-    cause instanceof Error &&
-    cause.name === "AbortError" &&
-    "code" in cause &&
-    cause.code === "ABORT_ERR" &&
-    signal?.aborted
-  )
-    throw new ArtifactReaderFailure("cancelled", "Firmware stream cancelled", {
-      cause: signal.reason,
-    });
-  throw cause;
-};
-
 const firmwareInputFailure = (operation: string, cause?: unknown) =>
   new AnalysisInputError(operation, { cause }, [
     {
       path: ["path"],
       reason: "out_of_range",
-      message: `Firmware must be a nonempty regular file no larger than ${FIRMWARE_LIMITS.inputBytes} bytes`,
+      message: `Firmware must be a nonempty regular file no larger than ${FIRMWARE_LIMITS.inputBytes} bytes. Select a stable copy within this allowance.`,
     },
   ]);
 

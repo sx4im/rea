@@ -134,6 +134,12 @@ it.each([null, undefined, new Error("original cause")])(
         remoteCode: "original",
         cancellation: { reason: null },
         cleanupFailure: cleanup,
+        partialObservation: {
+          kind: "file-snapshot-hash",
+          path: "/fixture/snapshot",
+          sha256: "a".repeat(64),
+          bytes: 17,
+        },
       },
     );
     const refreshed = original.withDiagnostics(
@@ -149,6 +155,12 @@ it.each([null, undefined, new Error("original cause")])(
       remoteCode: "original",
       cancellation: { reason: null },
       diagnostics: { stage: "last" },
+      partialObservation: {
+        kind: "file-snapshot-hash",
+        path: "/fixture/snapshot",
+        sha256: "a".repeat(64),
+        bytes: 17,
+      },
     });
     expect(refreshed.cleanupFailure).toBe(cleanup);
     cleanup.resolveCleanup();

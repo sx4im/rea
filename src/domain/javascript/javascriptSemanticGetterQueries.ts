@@ -64,6 +64,21 @@ export class SemanticGetterQuery {
 
   constructor(readonly state: JavaScriptSemanticAnalysisState) {}
 
+  get widening(): boolean {
+    return this.#fallback;
+  }
+
+  /** Charge retained local work and getter jobs to the same precise query. */
+  reserveResult(): boolean {
+    if (this.#limited) return false;
+    if (!this.#fallback && this.#visits >= SEMANTIC_GETTER_EXPANSION_LIMIT) {
+      this.#limited = true;
+      return false;
+    }
+    this.#visits++;
+    return true;
+  }
+
   retain(reference: Reference, escapes = false): void {
     // Direct fields keep their write suffix; only getter jobs widen omitted paths.
     this.#references.add({
@@ -85,11 +100,7 @@ export class SemanticGetterQuery {
     const paths = receivers?.get(receiver);
     const key = JSON.stringify([path, escapes]);
     if (paths?.has(key)) return true;
-    if (!this.#fallback && this.#visits >= SEMANTIC_GETTER_EXPANSION_LIMIT) {
-      this.#limited = true;
-      return true;
-    }
-    this.#visits++;
+    if (!this.reserveResult()) return true;
     const selections = paths ?? new Set<string>();
     const owners = receivers ?? new WeakMap<t.Node, Set<string>>();
     selections.add(key);

@@ -1,4 +1,6 @@
-import { open } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import type { LldbReadbackFiles } from "./LldbReadbackFiles.js";
+import type { Result } from "../domain/result.js";
 
 import { nativeCallEventSchema } from "../domain/native/nativeCallObservation.js";
 import type { NativeCallPartialObservation } from "../domain/native/nativeCallPartialObservation.js";
@@ -153,10 +155,7 @@ export const readBoundedPrefix = async (
   return { buffer, bytesRead };
 };
 
-const readPrefix = (
-  handle: Awaited<ReturnType<typeof open>>,
-  requestedBytes: number,
-) =>
+const readPrefix = (handle: FileHandle, requestedBytes: number) =>
   readBoundedPrefix(
     requestedBytes,
     async (buffer, offset, length, position) =>
@@ -164,54 +163,42 @@ const readPrefix = (
   );
 
 /** Read at most the bridge's journal bound, checking size before allocation. */
-export const readLldbObservationJournal = async (
+export const readLldbObservationJournal = (
   path: string,
-): Promise<{
-  readonly parsed: ParsedLldbJournal;
-  readonly limitations: string[];
-}> => {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, "r");
+  files: LldbReadbackFiles,
+): Promise<
+  Result<
+    { readonly parsed: ParsedLldbJournal; readonly limitations: string[] },
+    unknown
+  >
+> =>
+  files.read(path, async (handle) => {
     const { size } = await handle.stat();
     const length = Math.min(size, LLDB_OBSERVATION_JOURNAL_MAX_BYTES);
     const { buffer, bytesRead } = await readPrefix(handle, length);
-    const parsed = parseLldbObservationJournal(buffer.subarray(0, bytesRead));
-    const limitations = [
-      ...(size > LLDB_OBSERVATION_JOURNAL_MAX_BYTES
-        ? [
-            "The observation journal exceeded 8 MiB; only its bounded prefix was read.",
-          ]
-        : []),
-      ...(bytesRead < length
-        ? [
-            "The observation journal became shorter while being read; the available prefix was parsed.",
-          ]
-        : []),
-    ];
     return {
-      parsed,
-      limitations,
-    };
-  } catch (cause: unknown) {
-    return {
-      parsed: { events: [], otherStops: [], limitations: [] },
+      parsed: parseLldbObservationJournal(buffer.subarray(0, bytesRead)),
       limitations: [
-        `The observation journal could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ...(size > LLDB_OBSERVATION_JOURNAL_MAX_BYTES
+          ? [
+              "The observation journal exceeded 8 MiB; only its bounded prefix was read.",
+            ]
+          : []),
+        ...(bytesRead < length
+          ? [
+              "The observation journal became shorter while being read; the available prefix was parsed.",
+            ]
+          : []),
       ],
     };
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-};
+  });
 
 /** Retain an available output prefix without claiming an unreported total. */
-export const readPartialCapture = async (
+export const readPartialCapture = (
   path: string,
-): Promise<PartialCaptureRead | null> => {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, "r");
+  files: LldbReadbackFiles,
+): Promise<Result<PartialCaptureRead, unknown>> =>
+  files.read(path, async (handle) => {
     const { size } = await handle.stat();
     const length = Math.min(size, MAX_CAPTURE_BYTES);
     const { buffer, bytesRead } = await readPrefix(handle, length);
@@ -229,9 +216,4 @@ export const readPartialCapture = async (
             ]
           : [],
     };
-  } catch {
-    return null;
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-};
+  });

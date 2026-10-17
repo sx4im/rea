@@ -1,3 +1,4 @@
+import { assertRegularFileActive } from "../filesystem/RegularFile.js";
 import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,10 +7,14 @@ import type { JsonValue } from "../domain/jsonValue.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
-import { hashStableFile } from "../filesystem/StableFileHash.js";
+import {
+  hashStableFile,
+  stableFileHashCause,
+} from "../filesystem/StableFileHash.js";
 import type { FileCloseResourceOwner } from "../application/AnalysisProvider.js";
 import {
   RegularFileCleanupFailure,
+  regularFileCancellation,
   withOwnedRegularFile,
 } from "../filesystem/OwnedRegularFile.js";
 import {
@@ -149,7 +154,7 @@ export const inspectKunaInstallation = async (
         { command },
       );
   } catch (cause: unknown) {
-    options.signal?.throwIfAborted();
+    assertRegularFileActive(options.signal);
     return failure(
       "executable_missing",
       `Cannot execute REA_KUNA_COMMAND ${command}: ${message(cause)}. ${KUNA_COMMAND_REMEDIATION}`,
@@ -169,7 +174,7 @@ export const inspectKunaInstallation = async (
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
   } catch (cause: unknown) {
-    options.signal?.throwIfAborted();
+    assertRegularFileActive(options.signal);
     const output = execFileOutputFailure(cause);
     return failure(
       "version_unresolved",
@@ -207,16 +212,19 @@ export const inspectKunaInstallation = async (
           executable,
           options.fileCloseResources,
         );
-        options.signal?.throwIfAborted();
+        assertRegularFileActive(options.signal);
         return { fingerprint, script };
       },
     ));
   } catch (cause: unknown) {
-    if (cause instanceof RegularFileCleanupFailure) throw cause;
-    options.signal?.throwIfAborted();
+    if (
+      cause instanceof RegularFileCleanupFailure ||
+      regularFileCancellation(cause) !== undefined
+    )
+      throw cause;
     return failure(
       "executable_missing",
-      `Cannot fingerprint ${executable}: ${message(cause)}`,
+      `Cannot fingerprint ${executable}: ${message(stableFileHashCause(cause))}`,
       { command, executable },
     );
   }

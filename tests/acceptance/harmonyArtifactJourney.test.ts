@@ -25,6 +25,11 @@ test("preserves Harmony archive formats through the public CLI/MCP lifecycle", a
     "ets/modules.abc",
     new TextReader("opaque bytecode fixture"),
   );
+  const javascriptPaths = ["cts", "jsx", "mts", "ts", "tsx"].map(
+    (extension) => `assets/js/index.${extension}`,
+  );
+  for (const path of javascriptPaths)
+    await writer.add(path, new TextReader("export const value = 1;"));
   const bytes = await writer.close();
   const environment = {
     PATH: process.env.PATH ?? "",
@@ -114,6 +119,30 @@ test("preserves Harmony archive formats through the public CLI/MCP lifecycle", a
       expect(
         graph.components.bytecode.map(({ path: member }) => member),
       ).toEqual(["ets/modules.abc"]);
+      expect(
+        graph.components.javascript.map(({ path: member }) => member),
+      ).toEqual(javascriptPaths);
+      expect(graph.runtime_families).toEqual(["ark", "javascript"]);
+      const projectionInput = workspace.path("projection-input.json");
+      await writeFile(
+        projectionInput,
+        JSON.stringify({ inventory_evidence: [cliEvidence] }),
+      );
+      const cliProjection = await cli.run({
+        arguments: [
+          "project-harmony-application-graph",
+          projectionInput,
+          "--format",
+          "json",
+        ],
+        environment,
+      });
+      expect(cliProjection.exitCode, cliProjection.stderr).toBe(0);
+      expect(
+        harmonyApplicationProjectionResultSchema.parse(
+          parseEvidence(cliProjection.json).normalized_result,
+        ),
+      ).toEqual(graph);
       const closed = await client.callTool({
         name: "close_binary",
         arguments: {},

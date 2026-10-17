@@ -146,11 +146,14 @@ const completionInventoryLookup = async (
   return signal?.aborted === true ? undefined : result;
 };
 
-const providerCandidates = (
+const providerCandidates = async (
   session: BinarySessionPort | undefined,
-): readonly string[] => {
+): Promise<readonly string[]> => {
   if (session === undefined) return [];
-  const parsed = providerStatusSchema.safeParse(session.status());
+  const signal = currentMcpRequestSignal();
+  const parsed = providerStatusSchema.safeParse(
+    await session.status(signal === undefined ? {} : { signal }),
+  );
   if (!parsed.success) return [];
   const candidates = parsed.data.analysis_provider_candidates.map(
     ({ provider }) => provider.id,

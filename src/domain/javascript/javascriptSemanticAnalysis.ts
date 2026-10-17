@@ -345,6 +345,7 @@ export function* analyzeParsedJavaScriptSemanticsSteps(
     file.program,
     state,
     callables,
+    references,
     parserPartial,
   );
   return {

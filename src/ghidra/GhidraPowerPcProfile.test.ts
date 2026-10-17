@@ -51,7 +51,9 @@ const target = (change: Partial<PowerPcElfMetadata> = {}): BinaryTarget => ({
 describe("bounded Ghidra PowerPC admission", () => {
   it("binds the generic language instead of the loader's e500 choice", async () => {
     const ghidra = new GhidraProvider(config, silentLogger, {}, host);
-    expect(ghidra.inspectAvailability()).toMatchObject({ status: "available" });
+    expect(await ghidra.inspectAvailability()).toMatchObject({
+      status: "available",
+    });
     expect(ghidra.inspectTargetSupport(target()).status).toBe("supported");
     const resolved = await ghidra.resolveAnalysisProfile(target());
     if (!resolved.ok) throw resolved.error;

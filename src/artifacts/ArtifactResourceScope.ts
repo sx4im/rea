@@ -88,6 +88,21 @@ export class ArtifactResourceScope {
     return this.#pending.size > 0;
   }
 
+  /** Labels come from the exact retained owners, never from diagnostic text. */
+  get cleanupResources(): readonly string[] {
+    return [
+      ...new Set(
+        [...this.#pending].flatMap((owner) =>
+          owner.kind === "lease" && owner.lease instanceof AnalysisCleanupLease
+            ? owner.lease.released
+              ? []
+              : (owner.lease.cleanupResources ?? [owner.resource])
+            : [owner.resource],
+        ),
+      ),
+    ];
+  }
+
   /** Admit a resource operation while the scope remains open. */
   async run<T>(operation: () => Promise<T>): Promise<T> {
     while (true) {

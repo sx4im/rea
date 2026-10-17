@@ -75,7 +75,104 @@ describe.skipIf(process.platform !== "darwin")(
         }
       },
     );
+  },
+);
 
+describe.skipIf(process.platform !== "darwin")(
+  "native plist CLI source formats",
+  () => {
+    cliTest.for([
+      ["openstep", "unknown"],
+      ["openstep-data", "unknown"],
+      ["openstep-data-root", "unknown"],
+      ["openstep-empty-data", "unknown"],
+      ["xml", "xml"],
+      ["xml16", "xml"],
+      ["binary", "binary"],
+    ] as const)(
+      "reports the original $0 plist format through the compiled CLI",
+      async ([encoding, format], { cli }) => {
+        const directory = await createTestTempDirectory("rea-plist-format-");
+        const target = join(directory, "target");
+        const plist = join(directory, "selected.plist");
+        const withData = encoding === "openstep-data";
+        const dataRoot = encoding === "openstep-data-root";
+        const emptyData = encoding === "openstep-empty-data";
+        await writeFile(target, thinMach(0xfeedfacf, 0x0100000c));
+        await writeFile(
+          plist,
+          dataRoot
+            ? "<deadbeef>\n"
+            : emptyData
+              ? "<>\n"
+              : `{ Name = Example; Items = (a, b); ${withData ? "Blob = <deadbeef>;" : ""} }\n`,
+        );
+        if (encoding === "binary" || encoding.startsWith("xml")) {
+          await promisify(execFile)("/usr/bin/plutil", [
+            "-convert",
+            encoding === "binary" ? "binary1" : "xml1",
+            "--",
+            plist,
+          ]);
+          if (encoding === "xml16") {
+            const { stdout } = await promisify(execFile)("/usr/bin/plutil", [
+              "-convert",
+              "xml1",
+              "-o",
+              "-",
+              "--",
+              plist,
+            ]);
+            await writeFile(
+              plist,
+              Buffer.concat([
+                Buffer.from([0xfe, 0xff]),
+                Buffer.from(
+                  stdout.replace("UTF-8", "UTF-16"),
+                  "utf16le",
+                ).swap16(),
+              ]),
+            );
+          }
+        }
+        const result = await cli.run({
+          arguments: [
+            "inspect-plist",
+            target,
+            "--relative-path",
+            plist,
+            "--json",
+          ],
+          environment: {
+            REA_LOG_LEVEL: "silent",
+            REA_ANALYSIS_PROVIDER: "auto",
+          },
+        });
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.json).toMatchObject({
+          normalized_result: {
+            format,
+            source_path: plist,
+            value:
+              dataRoot || emptyData
+                ? { $plist_type: "data", base64: emptyData ? "" : "3q2+7w==" }
+                : {
+                    Name: "Example",
+                    Items: ["a", "b"],
+                    ...(withData
+                      ? { Blob: { $plist_type: "data", base64: "3q2+7w==" } }
+                      : {}),
+                  },
+          },
+        });
+      },
+    );
+  },
+);
+
+describe.skipIf(process.platform !== "darwin")(
+  "native plist CLI typed values",
+  () => {
     cliTest.for(["xml", "binary"] as const)(
       "decodes $0 plists that plutil cannot express as JSON",
       async (format, { cli }) => {

@@ -1,24 +1,33 @@
-import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { probeGhidraJava } from "./GhidraJavaProbe.js";
-
-vi.mock("node:child_process", async (original) => ({
-  ...(await original<typeof import("node:child_process")>()),
-  spawnSync: vi.fn(),
-}));
-afterEach(() => vi.mocked(spawnSync).mockReset());
-
-const probe = (values: Partial<ReturnType<typeof spawnSync>>) => {
-  vi.mocked(spawnSync).mockReturnValue({
-    pid: 1,
-    status: 0,
-    signal: null,
-    stdout: Buffer.alloc(0),
-    stderr: Buffer.alloc(0),
-    output: [],
-    ...values,
-  } as never);
-  return probeGhidraJava("/selected/bin/java", {});
+import { describe, expect, it, afterEach } from "vitest";
+import { probeGhidraJava, parseGhidraJavaOutput } from "./GhidraJavaProbe.js";
+import { createInspectionResources } from "../../tests/fixtures/inspectionResources.js";
+let resources = createInspectionResources();
+afterEach(async () => {
+  await resources.close();
+  resources = createInspectionResources();
+});
+const probe = (values: {
+  readonly stdout?: Buffer;
+  readonly stderr?: Buffer;
+  readonly status?: number | null;
+  readonly signal?: NodeJS.Signals | null;
+}) => {
+  const stdout = values.stdout ?? Buffer.alloc(0),
+    stderr = values.stderr ?? Buffer.alloc(0);
+  return parseGhidraJavaOutput("/selected/bin/java", {
+    stdout: {
+      text: stdout.toString("utf8"),
+      bytes: stdout.length,
+      observedBytes: stdout.length,
+    },
+    stderr: {
+      text: stderr.toString("utf8"),
+      bytes: stderr.length,
+      observedBytes: stderr.length,
+    },
+    exitCode: values.status === undefined ? 0 : values.status,
+    signal: values.signal ?? null,
+  });
 };
 
 describe("Ghidra Java prerequisite process facts", () => {
@@ -27,19 +36,32 @@ describe("Ghidra Java prerequisite process facts", () => {
     ["EACCES", "runtime_unavailable"],
     ["ETIMEDOUT", "runtime_unavailable"],
     ["ENOBUFS", "runtime_unavailable"],
-  ])("keeps %s distinct from other runtime failures", (code, expected) => {
-    const error = Object.assign(new Error(`controlled ${code}`), { code });
-    expect(probe({ error, status: null })).toMatchObject({
-      ok: false,
-      error: {
-        _tag: "GhidraJavaProbeFailure",
-        code: expected,
-        processErrorCode: code,
-        detail: expect.stringContaining(code),
-        output: { exit_code: null, truncated: code === "ENOBUFS" },
-      },
-    });
-  });
+  ])(
+    "keeps %s distinct from other runtime failures",
+    async (code, expected) => {
+      const error = Object.assign(new Error(`controlled ${code}`), { code });
+      const result = await probeGhidraJava(
+        "/selected/bin/java",
+        {},
+        {
+          resourceOwner: resources.owner,
+          launcher: async () => {
+            throw error;
+          },
+        },
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "GhidraJavaProbeFailure",
+          code: expected,
+          processErrorCode: code,
+          detail: expect.stringContaining(code),
+        },
+      });
+      expect(result.ok ? null : result.error).not.toHaveProperty("output");
+    },
+  );
 
   it("keeps raw byte counts and both streams on a nonzero exit", () => {
     const result = probe({

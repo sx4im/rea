@@ -8,6 +8,7 @@ const arrayFrom = Array.from;
 const defineProperty = Object.defineProperty;
 const ownPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const getPrototypeOf = Object.getPrototypeOf;
+const nativeFunctionPrototype = getPrototypeOf(callFunction);
 const getProperty = Reflect.get;
 const setProperty = Reflect.set;
 const SetConstructor = Set;
@@ -379,13 +380,7 @@ const recordInvocation = (kind, channel, event, args) =>
     error: false,
   });
 
-const invokeObservedEventListener = (
-  thisArg,
-  channel,
-  listener,
-  args,
-  nativeMethod,
-) => {
+const invokeObservedEventListener = (thisArg, channel, listener, args) => {
   // Recording slices an actual invocation frame, avoiding Array species;
   // callback dispatch keeps its native Array/Arguments representation.
   const recorded = recordInvocation(
@@ -395,8 +390,6 @@ const invokeObservedEventListener = (
     sliceArguments(args, 1),
   );
   try {
-    if (nativeMethod === "call") return listener.call(thisArg);
-    if (nativeMethod === "apply") return listener.apply(thisArg, args);
     return applyFunction(listener, thisArg, args);
   } catch (cause) {
     if (recorded !== null) recorded.error = true;
@@ -418,9 +411,9 @@ const invokeObservedEventListener = (
 const hookListenerRemovalTargets = new WeakMap();
 const MAX_LISTENER_CHAIN_HOPS = 16;
 
-// Follow native property lookup without invoking application getters or Proxy
-// traps. Undefined means the readable link is absent; null means unknown.
-const listenerDataDescriptor = (listener) => {
+// Parse native property lookup without invoking application getters or Proxy
+// traps. Undefined means absent; null means the lookup is unknown.
+const lookupPropertyDescriptor = (listener, key) => {
   let candidate = listener;
   for (
     let hops = 0;
@@ -428,15 +421,19 @@ const listenerDataDescriptor = (listener) => {
     hops += 1
   ) {
     if (isProxy(candidate)) return null;
-    const descriptor = ownPropertyDescriptor(candidate, "listener");
-    if (descriptor !== undefined) {
-      if (hasOwnProperty(descriptor, "value")) return descriptor;
-      // A setter-only property shadows ancestors with a known undefined read.
-      return descriptor.get === undefined ? undefined : null;
-    }
+    const descriptor = ownPropertyDescriptor(candidate, key);
+    if (descriptor !== undefined) return descriptor;
     candidate = getPrototypeOf(candidate);
   }
   return candidate === null ? undefined : null;
+};
+
+const listenerDataDescriptor = (listener) => {
+  const descriptor = lookupPropertyDescriptor(listener, "listener");
+  if (descriptor === null || descriptor === undefined) return descriptor;
+  if (hasOwnProperty(descriptor, "value")) return descriptor;
+  // A setter-only property shadows ancestors with a known undefined read.
+  return descriptor.get === undefined ? undefined : null;
 };
 
 // A decorator that wraps once's hook wrapper and names it through `.listener`
@@ -461,9 +458,67 @@ const classifyHookListenerWrapper = (listener) => {
   return typeof candidate === "function" ? "unknown" : "unowned";
 };
 
+const createObservedOnceCallback = (target, channel, listener, receiver) => {
+  // A private callable target avoids Proxy get invariants on an app's
+  // non-configurable, read-only call/apply properties. It never escapes
+  // through the native once wrapper's public listener link.
+  const callback = new ProxyConstructor(
+    function observedOnceListener() {
+      return invokeObservedEventListener(
+        this === receiver ? target : this,
+        channel,
+        listener,
+        arguments,
+      );
+    },
+    {
+      get: (_callable, key) => {
+        let value;
+        try {
+          value = getProperty(listener, key, listener);
+        } catch (cause) {
+          if (key === "call" || key === "apply")
+            recordIpcObservationGap(channel, `custom-${key}`, true);
+          throw cause;
+        }
+        if (key !== "call" && key !== "apply") return value;
+        if (typeof value !== "function") {
+          recordIpcObservationGap(channel, `custom-${key}`, true);
+          return value;
+        }
+        if (value === callFunction || value === applyArguments) return value;
+        // A runtime that selects an application method must preserve that
+        // method's receiver and original argument-list object. Its body may
+        // bypass the callable Proxy, so retain a gap rather than an invocation.
+        return new ProxyConstructor(value, {
+          apply: (method, thisArg, args) => {
+            const gap = recordIpcObservationGap(channel, `custom-${key}`);
+            if (args[0] === receiver) args[0] = target;
+            try {
+              return applyFunction(
+                method,
+                thisArg === callback ? listener : thisArg,
+                args,
+              );
+            } catch (cause) {
+              if (gap !== null) {
+                gap.error = true;
+                gap.phase = "failed";
+              }
+              throw cause;
+            }
+          },
+        });
+      },
+    },
+  );
+  return callback;
+};
+
 const patchIpcMain = (ipcMain) => {
   if (ipcMain === null || ipcMain === undefined) return;
   const { handle, on, once, removeAllListeners } = ipcMain;
+  let unobservedOnceScope = null;
   if (typeof handle === "function")
     ipcMain.handle = function patchedIpcMainHandle(channel, listener) {
       if (typeof listener !== "function")
@@ -492,6 +547,13 @@ const patchIpcMain = (ipcMain) => {
   if (typeof on !== "function") return;
   ipcMain.on = function patchedIpcMainOn(channel, listener) {
     if (typeof listener !== "function") return on.call(this, channel, listener);
+    if (unobservedOnceScope !== null) {
+      const scope = unobservedOnceScope;
+      const result = on.call(this, channel, listener);
+      recordIpcObservationGap(channel, "once-metadata");
+      if (scope.channel === channel) scope.gapRecorded = true;
+      return result;
+    }
     const wrapperStatus = classifyHookListenerWrapper(listener);
     if (wrapperStatus !== "unowned") {
       const result = on.call(this, channel, listener);
@@ -549,30 +611,81 @@ const patchIpcMain = (ipcMain) => {
     weakMapSet(hookListenerRemovalTargets, wrapped, listener);
     return on.call(this, channel, wrapped);
   };
-  // Mirror EventEmitter#once and _onceWrap: resolve this.on at registration
-  // and target.removeListener at firing, so later decorators observe both.
+  // Native once owns firing, removal and callback dispatch. Node versions
+  // differ in whether they read callback.call/apply. Observe actual invocation
+  // through a private callable Proxy instead of copying either implementation.
   if (typeof once === "function")
     ipcMain.once = function patchedIpcMainOnce(channel, listener) {
-      if (typeof listener !== "function")
+      if (
+        typeof listener !== "function" ||
+        this === null ||
+        (typeof this !== "object" && typeof this !== "function")
+      )
         return once.call(this, channel, listener);
       const target = this;
-      let fired = false;
-      const wrapped = function wrappedOnceEventListener() {
-        if (fired) return undefined;
-        target.removeListener(channel, wrapped);
-        fired = true;
-        return invokeObservedEventListener(
-          target,
-          channel,
-          listener,
-          arguments,
-          arguments.length === 0 ? "call" : "apply",
-        );
-      };
-      wrapped.listener = listener;
-      weakMapSet(hookListenerRemovalTargets, wrapped, wrapped);
-      this.on(channel, wrapped);
-      return this;
+      const metadata = lookupPropertyDescriptor(
+        nativeFunctionPrototype,
+        "listener",
+      );
+      const onMetadata = lookupPropertyDescriptor(target, "on");
+      if (
+        metadata === null ||
+        (metadata !== undefined && !hasOwnProperty(metadata, "value")) ||
+        onMetadata === null ||
+        (onMetadata !== undefined && !hasOwnProperty(onMetadata, "value"))
+      ) {
+        // Native wrapper creation can expose its callback through an inherited
+        // setter/Proxy, including one installed by an on getter. Pass the exact
+        // app callback; registrations in this synchronous scope stay unwrapped.
+        const previousScope = unobservedOnceScope;
+        const scope = { channel, gapRecorded: false };
+        let failed = true;
+        unobservedOnceScope = scope;
+        try {
+          const result = applyFunction(once, target, [channel, listener]);
+          failed = false;
+          return result;
+        } finally {
+          unobservedOnceScope = previousScope;
+          // An app decorator can register through an unhooked alias and then
+          // throw. Preserve a gap for either outcome, not proof of registration.
+          if (!scope.gapRecorded)
+            recordIpcObservationGap(channel, "once-metadata", failed);
+        }
+      }
+      const receiver = new ProxyConstructor(
+        { __proto__: null },
+        {
+          get: (_target, key) => {
+            const value = getProperty(target, key, target);
+            if (
+              (key !== "on" && key !== "removeListener") ||
+              typeof value !== "function"
+            )
+              return value;
+            return function forwardOnceOperation(...args) {
+              if (key === "on") {
+                const wrapped = args[1];
+                defineProperty(wrapped, "listener", {
+                  ...ownPropertyDescriptor(wrapped, "listener"),
+                  value: listener,
+                });
+                weakMapSet(hookListenerRemovalTargets, wrapped, wrapped);
+              }
+              return applyFunction(value, target, args);
+            };
+          },
+          set: (_target, key, value) => setProperty(target, key, value, target),
+        },
+      );
+      const callback = createObservedOnceCallback(
+        target,
+        channel,
+        listener,
+        receiver,
+      );
+      const result = applyFunction(once, receiver, [channel, callback]);
+      return result === receiver ? target : result;
     };
   if (typeof removeAllListeners !== "function") return;
   // Node owns its live-array traversal. A forwarding receiver translates only

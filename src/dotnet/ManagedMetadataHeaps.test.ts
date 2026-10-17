@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   readMetadataBlob,
+  readMetadataString,
   readMetadataUserString,
 } from "./ManagedMetadataHeaps.js";
 import type { ManagedMetadataLayout } from "./ManagedMetadataLayout.js";
@@ -56,4 +57,36 @@ describe("managed metadata heaps", () => {
       );
     },
   );
+
+  it("does not re-charge the decode budget on metadata string cache hits", () => {
+    const strLen = 10 * 1024 * 1024;
+    const strBytes = Buffer.alloc(strLen + 2, 0x61);
+    strBytes[0] = 0x00;
+    strBytes[strLen + 1] = 0x00;
+    const layout = {
+      rootOffset: 0,
+      size: strBytes.length,
+      version: "",
+      streamNames: ["#Strings"],
+      strings: { name: "#Strings", offset: 0, size: strBytes.length },
+      guid: { name: "#GUID", offset: 0, size: 0 },
+      blob: { name: "#Blob", offset: 0, size: 0 },
+      userStrings: null,
+      tables: new Map(),
+      rowCounts: [],
+      stringIndexSize: 2,
+      guidIndexSize: 2,
+      blobIndexSize: 2,
+      table: () => undefined,
+      tableIndexSize: () => 2,
+      codedIndexSize: () => 2,
+    } as unknown as ManagedMetadataLayout;
+
+    const first = readMetadataString(strBytes, layout, 1, layout.strings.size);
+    expect(first).toHaveLength(strLen);
+
+    expect(() =>
+      readMetadataString(strBytes, layout, 1, layout.strings.size),
+    ).not.toThrow();
+  });
 });

@@ -4,20 +4,25 @@ import { EvidenceIntegrityError } from "../../domain/evidenceErrors.js";
 import type { Result } from "../../domain/result.js";
 import { err, ok } from "../../domain/result.js";
 
+/**
+ * Authenticate caller-supplied records. When `expectedOperations` is omitted,
+ * the shared workflow owns which authentic operations it can use.
+ */
 const parseExpectedEvidence = (
   rawEvidence: readonly Evidence[],
-  expectedOperations: readonly string[],
+  expectedOperations?: readonly string[],
 ): Result<Evidence[], EvidenceIntegrityError> => {
   try {
     const evidence = rawEvidence.map(parseEvidence);
-    for (const record of evidence)
-      if (
-        !expectedOperations.includes(record.operation) ||
-        record.predicate_type !== "rea.analysis"
-      )
-        throw new TypeError(
-          `Expected ${expectedOperations.join(" or ")} Evidence, received ${record.operation}`,
-        );
+    if (expectedOperations !== undefined)
+      for (const record of evidence)
+        if (
+          !expectedOperations.includes(record.operation) ||
+          record.predicate_type !== "rea.analysis"
+        )
+          throw new TypeError(
+            `Expected ${expectedOperations.join(" or ")} Evidence, received ${record.operation}`,
+          );
     return ok(evidence);
   } catch (cause: unknown) {
     return err(
@@ -43,11 +48,14 @@ export const resolveManagedBoundaryEvidence = (
 ): Result<Evidence[], EvidenceIntegrityError> =>
   parseExpectedEvidence([evidence], ["inspect_managed_native_boundaries"]);
 
+/**
+ * Authenticate native observations without an operation allowlist: the domain
+ * counts authentic operations it cannot read symbols from as unsupported.
+ */
 export const resolveNativeEvidence = (
   evidence: readonly Evidence[],
-): Result<Evidence[], EvidenceIntegrityError> => {
-  return parseExpectedEvidence(evidence, ["inspect_macho", "analyze_function"]);
-};
+): Result<Evidence[], EvidenceIntegrityError> =>
+  parseExpectedEvidence(evidence);
 
 export const sourceEvidence = (input: {
   readonly managed_artifact?: Evidence | undefined;

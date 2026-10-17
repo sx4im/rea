@@ -8,6 +8,7 @@ import { collectJavaScriptSemanticDataEffects } from "./javascriptSemanticDataEf
 import type {
   JavaScriptSemanticCallable,
   JavaScriptSemanticIr,
+  JavaScriptSemanticReference,
 } from "./javascriptSemanticIr.js";
 import { collectJavaScriptSemanticPromises } from "./javascriptSemanticPromises.js";
 import { collectJavaScriptSemanticObjects } from "./javascriptSemanticObjects.js";
@@ -44,6 +45,7 @@ export function* collectJavaScriptDerivedSemanticsSteps(
   program: t.Program,
   state: JavaScriptSemanticAnalysisState,
   callables: readonly JavaScriptSemanticCallable[],
+  references: readonly JavaScriptSemanticReference[],
   parserPartial: boolean,
 ): Generator<void, DerivedSemanticAnalysis> {
   const calls = collectJavaScriptSemanticCalls(program, state, callables);
@@ -64,6 +66,7 @@ export function* collectJavaScriptDerivedSemanticsSteps(
     program,
     state,
     callables,
+    references,
   );
   yield;
   const dataEffects = collectJavaScriptSemanticDataEffects(

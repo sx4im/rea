@@ -223,6 +223,52 @@ def run_serve_mode():
         server.join(timeout=3)
 
 
+class ResponseEncodingTest(unittest.TestCase):
+    def setUp(self):
+        self.server = bridge._BridgeServer.__new__(bridge._BridgeServer)
+        self.server.token = "test-token"
+        self.server.session_id = str(uuid.uuid4())
+
+    def assert_authenticated_response(self, frame):
+        expected = hmac.new(
+            self.server.token.encode(),
+            f"rea-cutter-response-v2:{self.server.session_id}:{'a' * 64}:{'b' * 64}:{frame['response']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertTrue(hmac.compare_digest(frame["proof"], expected))
+        return json.loads(frame["response"])
+
+    def test_large_mixed_unicode_output_fits_the_authenticated_frame(self):
+        for suffix in ("a", "é", "雪", "😀"):
+            with self.subTest(suffix=suffix):
+                output = "a" * (5 * 1024 * 1024 - 1) + suffix
+                value = {"ok": True, "output": output, "execution_state": "complete"}
+                encoded = self.server._encode_authenticated_response(value, "a" * 64, "b" * 64)
+                self.assertIsNotNone(encoded)
+                self.assertLessEqual(len(encoded), bridge.MAX_FRAME_BYTES)
+                frame = json.loads(encoded)
+                self.assertEqual(self.assert_authenticated_response(frame), value)
+        self.assertIsNone(self.server._encode_authenticated_response({
+            "ok": True, "output": "😀" * (5 * 1024 * 1024),
+            "execution_state": "complete",
+        }, "a" * 64, "b" * 64))
+
+    def test_unencodable_output_preserves_authenticated_completion(self):
+        for index, surrogate in ((0, "\ud800"), (5 * 1024 * 1024 - 1, "\udfff")):
+            with self.subTest(index=index):
+                output = "a" * index + surrogate + "a" * (5 * 1024 * 1024 - index - 1)
+                value = {"ok": True, "output": output, "execution_state": "complete"}
+                sender, receiver = socket.socketpair()
+                with sender, receiver:
+                    receiver.settimeout(2)
+                    self.server._send_authenticated(sender, value, "a" * 64, "b" * 64)
+                    response = self.assert_authenticated_response(_frame(receiver))
+                self.assertTrue(response["ok"])
+                self.assertEqual(response["execution_state"], "complete")
+                self.assertIsNone(response["output"])
+                self.assertTrue(response["output_truncated"])
+
+
 class DocumentIdentityTest(unittest.TestCase):
     def test_document_config_drives_generation_and_command_admission(self):
         first = "/tmp/Cutter 雪 #1?.elf"
